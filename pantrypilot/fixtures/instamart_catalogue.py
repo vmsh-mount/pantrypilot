@@ -22,7 +22,7 @@ Prices reflect rough Bengaluru Instamart range as of early 2026; not
 intended to be exact.
 """
 
-from pantrypilot.models import NutritionPer100g, SKU, SKUCategory
+from pantrypilot.models import NutritionPer100g, NutritionSource, SKU, SKUCategory
 
 
 # Helper for readability
@@ -34,7 +34,7 @@ def _nutr(
     cal_mg: float,
     *,
     estimated: bool = True,
-    source: str = "IFCT-2017 category average",
+    source: NutritionSource = NutritionSource.CATEGORY_ESTIMATE,
 ) -> NutritionPer100g:
     return NutritionPer100g(
         calories_kcal=cal,
@@ -79,7 +79,7 @@ CATALOGUE: list[SKU] = [
         price_inr=329,
         ingredient_tags={"oats", "grain"},
         nutrition=_nutr(
-            389, 16.9, 10.6, 4.7, 54, estimated=False, source="Quaker pack label"
+            389, 16.9, 10.6, 4.7, 54, estimated=False, source=NutritionSource.BRAND_LABEL
         ),
     ),
     # -- Pulses (key protein source, multiple price points) --
@@ -143,7 +143,7 @@ CATALOGUE: list[SKU] = [
         price_inr=58,
         ingredient_tags={"dairy"},
         nutrition=_nutr(
-            58, 3.3, 0, 0.1, 120, estimated=False, source="Amul Toned pack label"
+            58, 3.3, 0, 0.1, 120, estimated=False, source=NutritionSource.BRAND_LABEL
         ),
     ),
     SKU(

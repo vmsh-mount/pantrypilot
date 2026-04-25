@@ -22,8 +22,10 @@ from pantrypilot.models import (
     Basket,
     BasketLine,
     NFIBreakdown,
+    NegativeTotals,
     NutrientTargets,
     NutritionPer100g,
+    NutritionSource,
     SKU,
     SKUCategory,
 )
@@ -159,6 +161,162 @@ def test_estimated_provenance_propagates_to_basket():
     assert mixed_basket.has_estimated_nutrition()  # any estimated -> badge
 
 
+def test_extended_nutrients_none_treated_as_zero_in_contribution():
+    """
+    Extended nutrients (zinc etc.) default to None in the current catalogue.
+    nutrition_contribution() must return 0.0 for them, not raise an error.
+    """
+    toor = get_sku("sku_toor_dal_tata_500g")
+    assert toor is not None
+    assert toor.nutrition.zinc_mg is None  # no extended data yet
+    line = BasketLine(sku=toor, quantity=1)
+    contrib = line.nutrition_contribution()
+    assert contrib.zinc_mg == 0.0
+    assert contrib.vitamin_b12_mcg == 0.0
+
+
+def test_missing_positive_nutrients_lists_all_extended_attrs():
+    """Every current-catalogue SKU should report all 7 extended attrs as missing."""
+    toor = get_sku("sku_toor_dal_tata_500g")
+    assert toor is not None
+    line = BasketLine(sku=toor, quantity=1)
+    missing = line.missing_positive_nutrients()
+    for attr in ("zinc_mg", "magnesium_mg", "potassium_mg",
+                 "vitamin_a_mcg", "vitamin_c_mg", "folate_mcg", "vitamin_b12_mcg"):
+        assert attr in missing, f"expected {attr} in missing"
+
+
+def test_nfi_overall_unchanged_by_extended_nutrients():
+    """
+    Extended pcts are display-only; they must NOT pull down overall_pct.
+    Basket with perfect core-5 coverage but zero extended = 100% overall.
+    """
+    target = NutrientTargets(
+        calories_kcal=10000,
+        protein_g=400,
+        fibre_g=200,
+        iron_mg=100,
+        calcium_mg=5000,
+        zinc_mg=500,       # large non-zero target
+        vitamin_b12_mcg=50,
+    )
+    basket_actual = NutrientTargets(
+        calories_kcal=10000,
+        protein_g=400,
+        fibre_g=200,
+        iron_mg=100,
+        calcium_mg=5000,
+        zinc_mg=0.0,        # zero contribution (data gap)
+        vitamin_b12_mcg=0.0,
+    )
+    nfi = NFIBreakdown.compute(basket_actual, target, estimated=False)
+    assert nfi.overall_pct == 100.0          # core-5 all met
+    assert nfi.zinc_pct == 0.0              # extended shows gap
+    assert nfi.vitamin_b12_pct == 0.0
+
+
+def test_negative_totals_sums_correctly():
+    """Basket.negative_totals() accumulates sodium/sat-fat/added-sugar from lines."""
+    # Build a minimal SKU with known negative values
+    sku = SKU(
+        sku_id="test_sku",
+        name="Test SKU",
+        brand="Test",
+        category=SKUCategory.OTHER,
+        pack_size_g=100,
+        price_inr=10,
+        nutrition=NutritionPer100g(
+            calories_kcal=200,
+            protein_g=5,
+            fibre_g=2,
+            iron_mg=1,
+            calcium_mg=50,
+            sodium_mg=400.0,
+            saturated_fat_g=3.0,
+            added_sugar_g=10.0,
+            ultra_processed=True,
+        ),
+    )
+    basket = Basket(
+        household_id="hh_test",
+        lines=[BasketLine(sku=sku, quantity=2)],  # 200g total
+    )
+    neg = basket.negative_totals()
+    # 200g × (400mg/100g) = 800mg sodium
+    assert abs(neg.sodium_mg - 800.0) < 0.1
+    # 200g × (3g/100g) = 6g sat fat
+    assert abs(neg.saturated_fat_g - 6.0) < 0.1
+    # 200g × (10g/100g) = 20g added sugar
+    assert abs(neg.added_sugar_g - 20.0) < 0.1
+    assert neg.ultra_processed_count == 1   # 1 line (not 2 packs)
+    assert neg.sodium_missing_lines == 0
+
+
+def test_negative_totals_tracks_missing_data():
+    """Lines with None negatives increment missing counters, not the sum."""
+    sku_no_data = SKU(
+        sku_id="test_sku_nodata",
+        name="No Data SKU",
+        brand="Test",
+        category=SKUCategory.OTHER,
+        pack_size_g=100,
+        price_inr=10,
+        nutrition=NutritionPer100g(
+            calories_kcal=100, protein_g=5, fibre_g=2, iron_mg=1, calcium_mg=50
+            # sodium_mg, saturated_fat_g, added_sugar_g all default to None
+        ),
+    )
+    basket = Basket(
+        household_id="hh_test",
+        lines=[BasketLine(sku=sku_no_data, quantity=1)],
+    )
+    neg = basket.negative_totals()
+    assert neg.sodium_mg == 0.0
+    assert neg.sodium_missing_lines == 1
+    assert neg.saturated_fat_missing_lines == 1
+    assert neg.added_sugar_missing_lines == 1
+    assert neg.ultra_processed_count == 0
+
+
+def test_nutrition_source_enum_on_catalogue():
+    """Verified items use BRAND_LABEL; unverified use CATEGORY_ESTIMATE."""
+    oats = get_sku("sku_oats_quaker_1kg")
+    toor = get_sku("sku_toor_dal_tata_500g")
+    assert oats is not None and toor is not None
+    assert oats.nutrition.source == NutritionSource.BRAND_LABEL
+    assert toor.nutrition.source == NutritionSource.CATEGORY_ESTIMATE
+
+
+def test_weekly_targets_includes_extended_nutrients():
+    """weekly_targets() now returns non-zero zinc, vitamin_b12 etc. from RDA table."""
+    hh = fixture_household()
+    targets = hh.weekly_targets()
+    assert targets.zinc_mg > 0
+    assert targets.magnesium_mg > 0
+    assert targets.potassium_mg > 0
+    assert targets.vitamin_a_mcg > 0
+    assert targets.vitamin_c_mg > 0
+    assert targets.folate_mcg > 0
+    assert targets.vitamin_b12_mcg > 0
+
+
+def test_missing_nutrients_report_covers_all_lines():
+    """Basket.missing_nutrients_report() returns one tuple per (nutrient, sku)."""
+    toor = get_sku("sku_toor_dal_tata_500g")
+    oats = get_sku("sku_oats_quaker_1kg")
+    assert toor is not None and oats is not None
+    basket = Basket(
+        household_id="hh",
+        lines=[BasketLine(sku=toor, quantity=1), BasketLine(sku=oats, quantity=1)],
+    )
+    report = basket.missing_nutrients_report()
+    # Both SKUs lack all 7 extended nutrients → 14 entries
+    assert len(report) == 14
+    nutrients = {nutrient for nutrient, _ in report}
+    assert "zinc_mg" in nutrients
+    assert "vitamin_b12_mcg" in nutrients
+
+
 if __name__ == "__main__":
     tests = [
         test_household_excluded_tags_union,
@@ -168,6 +326,14 @@ if __name__ == "__main__":
         test_nfi_overall_is_minimum_not_average,
         test_basket_nutrition_aggregation,
         test_estimated_provenance_propagates_to_basket,
+        test_extended_nutrients_none_treated_as_zero_in_contribution,
+        test_missing_positive_nutrients_lists_all_extended_attrs,
+        test_nfi_overall_unchanged_by_extended_nutrients,
+        test_negative_totals_sums_correctly,
+        test_negative_totals_tracks_missing_data,
+        test_nutrition_source_enum_on_catalogue,
+        test_weekly_targets_includes_extended_nutrients,
+        test_missing_nutrients_report_covers_all_lines,
     ]
     for t in tests:
         t()

@@ -16,6 +16,9 @@ Design notes:
   them per-SKU.
 - Pantry inventory uses grams as the canonical unit. SKU pack sizes get
   normalized at ingestion time.
+- Extended nutrients (zinc, magnesium, etc.) use Optional[float] = None.
+  None means "data not available", NOT zero. A zero value is an accurate
+  measurement; None is a gap we are honest about rather than papering over.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum
+from typing import Optional
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +76,14 @@ class SKUCategory(str, Enum):
     OTHER = "other"
 
 
+class NutritionSource(str, Enum):
+    """Provenance of per-100g nutrition values for a SKU."""
+
+    IFCT_2017 = "IFCT_2017"           # Indian Food Composition Tables 2017 (per-ingredient)
+    BRAND_LABEL = "brand_label"       # Verified from branded pack label
+    CATEGORY_ESTIMATE = "category_estimate"  # Generic category average — lowest confidence
+
+
 # ---------------------------------------------------------------------------
 # Constants — dietary exclusions and ICMR-NIN RDAs
 # ---------------------------------------------------------------------------
@@ -107,32 +119,93 @@ ALLERGY_EXCLUDED_TAGS = {
 @dataclass
 class NutritionPer100g:
     """
-    Per-100g nutrition. Five nutrients in v1: enough to show the optimizer
-    earning its keep without faking a 30-nutrient model.
+    Per-100g nutrition. Five core nutrients drive the CP-SAT optimizer.
+    Seven extended positives and four negatives are for display only in v1.
 
-    is_estimated: True when values came from category averages (e.g. "toor
-    dal generic") rather than a verified per-brand source. Surfaces as an
-    'estimated' badge in user UI and in the Swiggy demo.
+    None = unknown (NOT zero). A SKU with sodium_mg=None has unknown sodium
+    content. The UI surfaces a data-gap warning, not a zero reading.
+
+    Sources of truth, in order of confidence:
+      BRAND_LABEL      — copied from branded pack label
+      IFCT_2017        — Indian Food Composition Tables 2017
+      CATEGORY_ESTIMATE — generic category average; flag in UI
     """
 
+    # Core positives (required; these five drive the optimizer)
     calories_kcal: float
     protein_g: float
     fibre_g: float
     iron_mg: float
     calcium_mg: float
+
+    # Extended positives (None = data gap, not zero)
+    zinc_mg: Optional[float] = None
+    magnesium_mg: Optional[float] = None
+    potassium_mg: Optional[float] = None
+    vitamin_a_mcg: Optional[float] = None   # Retinol Activity Equivalents
+    vitamin_c_mg: Optional[float] = None
+    folate_mcg: Optional[float] = None      # Dietary Folate Equivalents
+    vitamin_b12_mcg: Optional[float] = None
+
+    # Negatives (None = data gap)
+    sodium_mg: Optional[float] = None
+    saturated_fat_g: Optional[float] = None
+    added_sugar_g: Optional[float] = None
+    ultra_processed: bool = False
+
+    # Provenance
     is_estimated: bool = True
-    source: str = "IFCT-2017 category average"
+    source: NutritionSource = NutritionSource.CATEGORY_ESTIMATE
+
+
+# Attribute names for the seven extended positive nutrients, in display order.
+# Used by BasketLine.missing_positive_nutrients() and NFIBreakdown.
+_EXTENDED_POSITIVE_ATTRS: list[str] = [
+    "zinc_mg",
+    "magnesium_mg",
+    "potassium_mg",
+    "vitamin_a_mcg",
+    "vitamin_c_mg",
+    "folate_mcg",
+    "vitamin_b12_mcg",
+]
+
+
+@dataclass
+class NegativeTotals:
+    """
+    Weekly basket totals for negative nutrients. For display only — the
+    optimizer does not penalise negatives in v1 (display-first approach).
+    """
+
+    sodium_mg: float
+    saturated_fat_g: float
+    added_sugar_g: float
+    ultra_processed_count: int       # number of basket lines with ultra_processed=True
+    sodium_missing_lines: int        # lines where sodium_mg was None
+    saturated_fat_missing_lines: int
+    added_sugar_missing_lines: int
 
 
 @dataclass
 class NutrientTargets:
     """Weekly household nutrient targets, summed across members × 7."""
 
+    # Core (required positional args; the optimizer reads these)
     calories_kcal: float
     protein_g: float
     fibre_g: float
     iron_mg: float
     calcium_mg: float
+
+    # Extended (default 0.0 for backward compat with positional constructor calls)
+    zinc_mg: float = 0.0
+    magnesium_mg: float = 0.0
+    potassium_mg: float = 0.0
+    vitamin_a_mcg: float = 0.0
+    vitamin_c_mg: float = 0.0
+    folate_mcg: float = 0.0
+    vitamin_b12_mcg: float = 0.0
 
     def __add__(self, other: "NutrientTargets") -> "NutrientTargets":
         return NutrientTargets(
@@ -141,6 +214,13 @@ class NutrientTargets:
             fibre_g=self.fibre_g + other.fibre_g,
             iron_mg=self.iron_mg + other.iron_mg,
             calcium_mg=self.calcium_mg + other.calcium_mg,
+            zinc_mg=self.zinc_mg + other.zinc_mg,
+            magnesium_mg=self.magnesium_mg + other.magnesium_mg,
+            potassium_mg=self.potassium_mg + other.potassium_mg,
+            vitamin_a_mcg=self.vitamin_a_mcg + other.vitamin_a_mcg,
+            vitamin_c_mg=self.vitamin_c_mg + other.vitamin_c_mg,
+            folate_mcg=self.folate_mcg + other.folate_mcg,
+            vitamin_b12_mcg=self.vitamin_b12_mcg + other.vitamin_b12_mcg,
         )
 
     def scale(self, factor: float) -> "NutrientTargets":
@@ -150,15 +230,21 @@ class NutrientTargets:
             fibre_g=self.fibre_g * factor,
             iron_mg=self.iron_mg * factor,
             calcium_mg=self.calcium_mg * factor,
+            zinc_mg=self.zinc_mg * factor,
+            magnesium_mg=self.magnesium_mg * factor,
+            potassium_mg=self.potassium_mg * factor,
+            vitamin_a_mcg=self.vitamin_a_mcg * factor,
+            vitamin_c_mg=self.vitamin_c_mg * factor,
+            folate_mcg=self.folate_mcg * factor,
+            vitamin_b12_mcg=self.vitamin_b12_mcg * factor,
         )
 
 
-# ICMR-NIN 2020 RDA reference values, simplified.
+# ICMR-NIN 2020 RDA reference values.
 # Source: ICMR-NIN "Nutrient Requirements for Indians" (2020).
 #
-# CAVEAT for reviewers: this is a pragmatic v1 mapping. Real RDA tables
-# have many more granular bands (pregnancy, lactation, age >60, activity
-# tiers, etc.). Documented as a v1 simplification, not hidden.
+# CAVEAT for reviewers: pragmatic v1 mapping. Real tables have more bands
+# (pregnancy, lactation, activity tiers, etc.). Documented simplification.
 _RDA_DAILY_REFERENCE = {
     ("male", "adult"): {
         "calories_kcal": 2110,
@@ -166,6 +252,13 @@ _RDA_DAILY_REFERENCE = {
         "fibre_g": 40,
         "iron_mg": 19,
         "calcium_mg": 1000,
+        "zinc_mg": 12.0,
+        "magnesium_mg": 340.0,
+        "potassium_mg": 3750.0,
+        "vitamin_a_mcg": 800.0,
+        "vitamin_c_mg": 80.0,
+        "folate_mcg": 200.0,
+        "vitamin_b12_mcg": 2.2,
     },
     ("female", "adult"): {
         "calories_kcal": 1660,
@@ -173,6 +266,13 @@ _RDA_DAILY_REFERENCE = {
         "fibre_g": 30,
         "iron_mg": 29,
         "calcium_mg": 1000,
+        "zinc_mg": 10.0,
+        "magnesium_mg": 310.0,
+        "potassium_mg": 3750.0,
+        "vitamin_a_mcg": 600.0,
+        "vitamin_c_mg": 65.0,
+        "folate_mcg": 200.0,
+        "vitamin_b12_mcg": 2.2,
     },
     ("male", "child_4_6"): {
         "calories_kcal": 1360,
@@ -180,6 +280,13 @@ _RDA_DAILY_REFERENCE = {
         "fibre_g": 22,
         "iron_mg": 11,
         "calcium_mg": 550,
+        "zinc_mg": 5.0,
+        "magnesium_mg": 120.0,
+        "potassium_mg": 1500.0,
+        "vitamin_a_mcg": 400.0,
+        "vitamin_c_mg": 40.0,
+        "folate_mcg": 80.0,
+        "vitamin_b12_mcg": 0.9,
     },
     ("female", "child_4_6"): {
         "calories_kcal": 1360,
@@ -187,6 +294,13 @@ _RDA_DAILY_REFERENCE = {
         "fibre_g": 22,
         "iron_mg": 11,
         "calcium_mg": 550,
+        "zinc_mg": 5.0,
+        "magnesium_mg": 120.0,
+        "potassium_mg": 1500.0,
+        "vitamin_a_mcg": 400.0,
+        "vitamin_c_mg": 40.0,
+        "folate_mcg": 80.0,
+        "vitamin_b12_mcg": 0.9,
     },
     ("female", "senior"): {
         "calories_kcal": 1500,
@@ -194,6 +308,13 @@ _RDA_DAILY_REFERENCE = {
         "fibre_g": 30,
         "iron_mg": 13,
         "calcium_mg": 1200,
+        "zinc_mg": 10.0,
+        "magnesium_mg": 310.0,
+        "potassium_mg": 3750.0,
+        "vitamin_a_mcg": 600.0,
+        "vitamin_c_mg": 65.0,
+        "folate_mcg": 200.0,
+        "vitamin_b12_mcg": 2.4,
     },
     ("male", "senior"): {
         "calories_kcal": 1900,
@@ -201,6 +322,13 @@ _RDA_DAILY_REFERENCE = {
         "fibre_g": 40,
         "iron_mg": 17,
         "calcium_mg": 1200,
+        "zinc_mg": 12.0,
+        "magnesium_mg": 340.0,
+        "potassium_mg": 3750.0,
+        "vitamin_a_mcg": 800.0,
+        "vitamin_c_mg": 80.0,
+        "folate_mcg": 200.0,
+        "vitamin_b12_mcg": 2.4,
     },
 }
 
@@ -248,6 +376,13 @@ class Member:
             fibre_g=ref["fibre_g"],
             iron_mg=ref["iron_mg"],
             calcium_mg=ref["calcium_mg"],
+            zinc_mg=ref["zinc_mg"],
+            magnesium_mg=ref["magnesium_mg"],
+            potassium_mg=ref["potassium_mg"],
+            vitamin_a_mcg=ref["vitamin_a_mcg"],
+            vitamin_c_mg=ref["vitamin_c_mg"],
+            folate_mcg=ref["folate_mcg"],
+            vitamin_b12_mcg=ref["vitamin_b12_mcg"],
         )
 
     def excluded_tags(self) -> set[str]:
@@ -374,6 +509,11 @@ class BasketLine:
         return self.sku.pack_size_g * self.quantity
 
     def nutrition_contribution(self) -> NutrientTargets:
+        """
+        Contribution to weekly NutrientTargets from this basket line.
+        Extended nutrients with None values contribute 0.0 (data gap,
+        not a true zero). Use missing_positive_nutrients() to identify gaps.
+        """
         g = self.total_grams()
         n = self.sku.nutrition
         factor = g / 100.0
@@ -383,6 +523,30 @@ class BasketLine:
             fibre_g=n.fibre_g * factor,
             iron_mg=n.iron_mg * factor,
             calcium_mg=n.calcium_mg * factor,
+            zinc_mg=(n.zinc_mg or 0.0) * factor,
+            magnesium_mg=(n.magnesium_mg or 0.0) * factor,
+            potassium_mg=(n.potassium_mg or 0.0) * factor,
+            vitamin_a_mcg=(n.vitamin_a_mcg or 0.0) * factor,
+            vitamin_c_mg=(n.vitamin_c_mg or 0.0) * factor,
+            folate_mcg=(n.folate_mcg or 0.0) * factor,
+            vitamin_b12_mcg=(n.vitamin_b12_mcg or 0.0) * factor,
+        )
+
+    def missing_positive_nutrients(self) -> list[str]:
+        """Returns extended nutrient attribute names where the SKU has None values."""
+        n = self.sku.nutrition
+        return [attr for attr in _EXTENDED_POSITIVE_ATTRS if getattr(n, attr) is None]
+
+    def negative_contribution(self) -> tuple[float, float, float, bool]:
+        """Returns (sodium_mg, saturated_fat_g, added_sugar_g, ultra_processed) per line."""
+        g = self.total_grams()
+        n = self.sku.nutrition
+        factor = g / 100.0
+        return (
+            (n.sodium_mg or 0.0) * factor,
+            (n.saturated_fat_g or 0.0) * factor,
+            (n.added_sugar_g or 0.0) * factor,
+            n.ultra_processed,
         )
 
 
@@ -404,18 +568,61 @@ class Basket:
         """If any line has estimated nutrition, the NFI score must be badged."""
         return any(line.sku.nutrition.is_estimated for line in self.lines)
 
+    def negative_totals(self) -> NegativeTotals:
+        """Aggregate negative nutrients across all basket lines."""
+        sodium = saturated_fat = added_sugar = 0.0
+        up_count = na_sodium = na_sat = na_sugar = 0
+        for line in self.lines:
+            n = line.sku.nutrition
+            g = line.total_grams()
+            factor = g / 100.0
+            if n.sodium_mg is None:
+                na_sodium += 1
+            else:
+                sodium += n.sodium_mg * factor
+            if n.saturated_fat_g is None:
+                na_sat += 1
+            else:
+                saturated_fat += n.saturated_fat_g * factor
+            if n.added_sugar_g is None:
+                na_sugar += 1
+            else:
+                added_sugar += n.added_sugar_g * factor
+            if n.ultra_processed:
+                up_count += 1
+        return NegativeTotals(
+            sodium_mg=sodium,
+            saturated_fat_g=saturated_fat,
+            added_sugar_g=added_sugar,
+            ultra_processed_count=up_count,
+            sodium_missing_lines=na_sodium,
+            saturated_fat_missing_lines=na_sat,
+            added_sugar_missing_lines=na_sugar,
+        )
+
+    def missing_nutrients_report(self) -> list[tuple[str, str]]:
+        """Returns (nutrient_attr, sku_id) pairs where extended nutrition is unknown."""
+        result: list[tuple[str, str]] = []
+        for line in self.lines:
+            for attr in line.missing_positive_nutrients():
+                result.append((attr, line.sku.sku_id))
+        return result
+
 
 @dataclass
 class NFIBreakdown:
     """
     Nutrition Fit Index — % of weekly target met, per nutrient and overall.
     Capped at 100 per nutrient (over-shooting protein doesn't compensate
-    for missing iron). Overall is the *minimum* across nutrients, not the
-    average — a basket with 100% protein and 30% iron is a 30% basket.
-    This is a deliberate design choice: we surface the weakest nutrient,
-    not paper over it.
+    for missing iron). Overall is the *minimum* across the core five
+    nutrients, not the average — a basket with 100% protein and 30% iron
+    is a 30% basket. This surfaces the weakest nutrient, not papers over it.
+
+    Extended nutrient pcts are informational; they do NOT affect overall_pct.
+    overall_pct = min(protein, fibre, iron, calcium, calories) only.
     """
 
+    # Core five (drive overall_pct)
     protein_pct: float
     fibre_pct: float
     iron_pct: float
@@ -423,6 +630,15 @@ class NFIBreakdown:
     calories_pct: float
     overall_pct: float
     contains_estimated: bool
+
+    # Extended positives (display only; default 0.0)
+    zinc_pct: float = 0.0
+    magnesium_pct: float = 0.0
+    potassium_pct: float = 0.0
+    vitamin_a_pct: float = 0.0
+    vitamin_c_pct: float = 0.0
+    folate_pct: float = 0.0
+    vitamin_b12_pct: float = 0.0
 
     @classmethod
     def compute(
@@ -449,4 +665,11 @@ class NFIBreakdown:
             calories_pct=calories,
             overall_pct=min(protein, fibre, iron, calcium, calories),
             contains_estimated=estimated,
+            zinc_pct=pct(basket_nutrition.zinc_mg, target.zinc_mg),
+            magnesium_pct=pct(basket_nutrition.magnesium_mg, target.magnesium_mg),
+            potassium_pct=pct(basket_nutrition.potassium_mg, target.potassium_mg),
+            vitamin_a_pct=pct(basket_nutrition.vitamin_a_mcg, target.vitamin_a_mcg),
+            vitamin_c_pct=pct(basket_nutrition.vitamin_c_mg, target.vitamin_c_mg),
+            folate_pct=pct(basket_nutrition.folate_mcg, target.folate_mcg),
+            vitamin_b12_pct=pct(basket_nutrition.vitamin_b12_mcg, target.vitamin_b12_mcg),
         )
