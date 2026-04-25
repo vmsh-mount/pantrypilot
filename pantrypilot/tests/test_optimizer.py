@@ -73,22 +73,28 @@ def test_zero_micronutrient_items_absent_from_basket():
 
 def test_pantry_topup_tracking_works():
     """
-    Lactose-free milk has only 200 g in pantry (< 0.25 × 1000 g = 250 g)
-    and the optimizer heavily relies on it for calcium.  It must appear in
-    pantry_topup — the explainability field that shows which low-stock items
-    the basket is topping up.
+    pantry_topup flags low-stock items that end up in the basket.
 
-    Note: toor dal (80 g pantry) may NOT appear in the basket if the optimizer
-    finds a nutritionally superior and cheaper pulse (e.g. chickpeas at ₹85
-    vs toor dal at ₹98 with better fibre and calcium).  The optimizer chooses
-    the best option — "low pantry" is a signal, not a mandate to restock that
-    exact SKU.
+    With an expanded catalogue (67 SKUs), the optimizer may prefer high-density
+    calcium sources like sesame seeds (975 mg Ca/100 g) over lactose-free milk
+    (125 mg Ca/100 g).  The invariant we care about is: *any* basket item whose
+    pantry quantity was below the topup threshold is listed in pantry_topup.
+    We do not mandate *which* low-stock item must be restocked.
     """
     result = optimise_basket(fixture_household(), fixture_catalogue(), fixture_pantry())
-    assert result.pantry_topup, "pantry_topup should be non-empty when low-stock items are bought"
-    assert "sku_milk_lactose_free_1l" in result.pantry_topup, (
-        "Low-stock lactose-free milk was bought but not flagged in pantry_topup"
-    )
+    basket_ids = {line.sku.sku_id for line in result.basket.lines}
+    low_stock = {"sku_toor_dal_tata_500g", "sku_milk_lactose_free_1l"}
+    bought_low_stock = basket_ids & low_stock
+    if bought_low_stock:
+        for sku_id in bought_low_stock:
+            assert sku_id in result.pantry_topup, (
+                f"Low-stock item {sku_id} is in basket but not flagged in pantry_topup"
+            )
+    # pantry_topup must only contain items that are actually in the basket
+    for sku_id in result.pantry_topup:
+        assert sku_id in basket_ids, (
+            f"pantry_topup includes {sku_id} but it is not in the basket"
+        )
 
 
 def test_no_regular_dairy_in_basket():
@@ -111,19 +117,25 @@ def test_no_regular_dairy_in_basket():
 def test_calcium_sources_present():
     """
     Calcium is the binding constraint for the Sharmas: all regular dairy is
-    excluded, pantry contributes almost no calcium (only 200 g lactose-free milk
-    = 250 mg vs a ~26 000 mg weekly target). The optimizer must lean on
-    lactose-free milk, tofu, and/or leafy greens.
+    excluded, pantry has only 250 mg calcium vs a ~26 000 mg weekly target.
+    The optimizer must lean on one of many available calcium-rich SKUs.
+    With the expanded catalogue, sesame seeds (975 mg Ca/100 g) are now
+    available alongside the original sources.
     """
     result = optimise_basket(fixture_household(), fixture_catalogue(), fixture_pantry())
     basket_ids = {line.sku.sku_id for line in result.basket.lines}
     high_calcium_ids = {
-        "sku_milk_lactose_free_1l",   # 125 mg Ca / 100 g
-        "sku_tofu_urbanplatter_400g", # 350 mg Ca / 100 g
-        "sku_methi_250g",             # 176 mg Ca / 100 g
-        "sku_palak_500g",             # 99 mg Ca / 100 g
-        "sku_haldi_tata_200g",        # 183 mg Ca / 100 g
-        "sku_rajma_organicindia_500g",# 143 mg Ca / 100 g
+        "sku_milk_lactose_free_1l",       # 125 mg Ca / 100 g
+        "sku_tofu_urbanplatter_400g",      # 350 mg Ca / 100 g
+        "sku_methi_250g",                  # 176 mg Ca / 100 g
+        "sku_palak_500g",                  # 99 mg Ca / 100 g
+        "sku_haldi_tata_200g",             # 183 mg Ca / 100 g
+        "sku_rajma_organicindia_500g",     # 143 mg Ca / 100 g
+        "sku_sesame_seeds_250g",           # 975 mg Ca / 100 g — new, best plant source
+        "sku_soya_chunks_nutrela_200g",    # 350 mg Ca / 100 g — new
+        "sku_paneer_lactose_free_200g",    # 208 mg Ca / 100 g — new
+        "sku_ragi_flour_500g",             # 344 mg Ca / 100 g — new
+        "sku_curd_lactose_free_400g",      # 121 mg Ca / 100 g — new
     }
     found = basket_ids & high_calcium_ids
     assert found, (

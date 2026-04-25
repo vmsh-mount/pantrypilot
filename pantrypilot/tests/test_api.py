@@ -60,11 +60,11 @@ def test_catalogue_filters_incompatible_skus():
         resp = client.get("/catalogue", params={"household_id": "hh_demo_001"})
         assert resp.status_code == 200
         data = resp.json()
-        assert data["total_skus"] == 31
-        assert data["compatible_skus"] == 21
-        assert data["filtered_out"] == 10
+        assert data["total_skus"] == 67
+        assert data["compatible_skus"] == 54
+        assert data["filtered_out"] == 13
         assert data["powered_by"] == "Swiggy Instamart"
-        assert len(data["skus"]) == 21
+        assert len(data["skus"]) == 54
 
 
 def test_catalogue_unknown_household_returns_404():

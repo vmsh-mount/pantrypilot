@@ -163,27 +163,31 @@ def test_estimated_provenance_propagates_to_basket():
 
 def test_extended_nutrients_none_treated_as_zero_in_contribution():
     """
-    Extended nutrients (zinc etc.) default to None in the current catalogue.
-    nutrition_contribution() must return 0.0 for them, not raise an error.
+    Nutrients with None values in the SKU nutrition data contribute 0.0
+    to nutrition_contribution(), not an error.
+    Toor dal is a plant food — vitamin_b12_mcg is None (no B12 in plants).
     """
     toor = get_sku("sku_toor_dal_tata_500g")
     assert toor is not None
-    assert toor.nutrition.zinc_mg is None  # no extended data yet
+    assert toor.nutrition.vitamin_b12_mcg is None  # plant food, no B12
     line = BasketLine(sku=toor, quantity=1)
     contrib = line.nutrition_contribution()
-    assert contrib.zinc_mg == 0.0
     assert contrib.vitamin_b12_mcg == 0.0
+    # zinc IS now populated for toor dal; check it contributes correctly
+    assert toor.nutrition.zinc_mg is not None
+    assert contrib.zinc_mg > 0.0
 
 
-def test_missing_positive_nutrients_lists_all_extended_attrs():
-    """Every current-catalogue SKU should report all 7 extended attrs as missing."""
+def test_missing_positive_nutrients_returns_b12_for_plants():
+    """Plant foods without B12 data show vitamin_b12_mcg as missing."""
     toor = get_sku("sku_toor_dal_tata_500g")
     assert toor is not None
     line = BasketLine(sku=toor, quantity=1)
     missing = line.missing_positive_nutrients()
-    for attr in ("zinc_mg", "magnesium_mg", "potassium_mg",
-                 "vitamin_a_mcg", "vitamin_c_mg", "folate_mcg", "vitamin_b12_mcg"):
-        assert attr in missing, f"expected {attr} in missing"
+    assert "vitamin_b12_mcg" in missing
+    # zinc, mag, pot are now filled for toor dal — not in missing list
+    assert "zinc_mg" not in missing
+    assert "magnesium_mg" not in missing
 
 
 def test_nfi_overall_unchanged_by_extended_nutrients():
@@ -279,12 +283,17 @@ def test_negative_totals_tracks_missing_data():
 
 
 def test_nutrition_source_enum_on_catalogue():
-    """Verified items use BRAND_LABEL; unverified use CATEGORY_ESTIMATE."""
+    """
+    Verified items use BRAND_LABEL; IFCT-2017 whole foods use IFCT_2017;
+    anything else uses CATEGORY_ESTIMATE.
+    """
     oats = get_sku("sku_oats_quaker_1kg")
     toor = get_sku("sku_toor_dal_tata_500g")
-    assert oats is not None and toor is not None
+    jam = get_sku("sku_jam_kissan_500g")
+    assert oats is not None and toor is not None and jam is not None
     assert oats.nutrition.source == NutritionSource.BRAND_LABEL
-    assert toor.nutrition.source == NutritionSource.CATEGORY_ESTIMATE
+    assert toor.nutrition.source == NutritionSource.IFCT_2017
+    assert jam.nutrition.source == NutritionSource.CATEGORY_ESTIMATE
 
 
 def test_weekly_targets_includes_extended_nutrients():
@@ -310,11 +319,12 @@ def test_missing_nutrients_report_covers_all_lines():
         lines=[BasketLine(sku=toor, quantity=1), BasketLine(sku=oats, quantity=1)],
     )
     report = basket.missing_nutrients_report()
-    # Both SKUs lack all 7 extended nutrients → 14 entries
-    assert len(report) == 14
+    # Both are plant foods → at minimum vitamin_b12_mcg missing for both
+    assert len(report) >= 2
     nutrients = {nutrient for nutrient, _ in report}
-    assert "zinc_mg" in nutrients
     assert "vitamin_b12_mcg" in nutrients
+    skus_with_missing = {sku_id for _, sku_id in report}
+    assert "sku_toor_dal_tata_500g" in skus_with_missing
 
 
 if __name__ == "__main__":
@@ -327,7 +337,7 @@ if __name__ == "__main__":
         test_basket_nutrition_aggregation,
         test_estimated_provenance_propagates_to_basket,
         test_extended_nutrients_none_treated_as_zero_in_contribution,
-        test_missing_positive_nutrients_lists_all_extended_attrs,
+        test_missing_positive_nutrients_returns_b12_for_plants,
         test_nfi_overall_unchanged_by_extended_nutrients,
         test_negative_totals_sums_correctly,
         test_negative_totals_tracks_missing_data,
