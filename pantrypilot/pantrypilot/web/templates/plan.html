@@ -311,6 +311,7 @@ function renderBasket(cycle) {
     ? 'text-green-600'
     : nfi.overall_pct >= 80 ? 'text-amber-600' : 'text-red-500';
 
+  let editMode = false;
   const basketLines = cycle.basket.map((line, i) => {
     const isTopup = cycle.pantry_topup.includes(line.sku_id);
     const topupBadge = isTopup
@@ -334,6 +335,20 @@ function renderBasket(cycle) {
          </div>`
       : '';
 
+    const editControls = `
+      <div class="edit-controls hidden flex items-center gap-2 mt-2">
+        <div class="flex items-center border border-slate-200 rounded-lg overflow-hidden">
+          <button disabled class="px-2.5 py-1 text-slate-400 bg-slate-50 text-sm cursor-not-allowed hover:bg-slate-100">−</button>
+          <span class="px-3 text-xs font-semibold text-slate-700">${line.quantity}</span>
+          <button disabled class="px-2.5 py-1 text-slate-400 bg-slate-50 text-sm cursor-not-allowed hover:bg-slate-100">+</button>
+        </div>
+        <button disabled
+          class="text-xs text-red-400 border border-red-100 px-2.5 py-1 rounded-lg cursor-not-allowed
+                 flex items-center gap-1 hover:bg-red-50">
+          🗑 Remove
+        </button>
+      </div>`;
+
     return `
       <div id="line-${i}" class="py-3 border-b border-slate-50 last:border-0">
         <div class="flex items-start gap-3">
@@ -347,6 +362,7 @@ function renderBasket(cycle) {
               ${line.quantity} × ${fmtSize(line.pack_size_g)} · ${line.brand}
             </div>
             <div class="text-xs text-slate-400 mt-0.5 italic">${line.reason}</div>
+            ${editControls}
             ${swapBtn}
           </div>
           <div class="text-sm font-bold text-slate-800 flex-shrink-0 pt-0.5 line-price">
@@ -403,6 +419,31 @@ function renderBasket(cycle) {
       : `<div class="text-xs text-green-600 mt-2">✓ No ultra-processed items</div>`}
   `;
 
+  // Group lines by category
+  const ORDER = ['Grains & Cereals','Lentils & Legumes','Vegetables','Fruits',
+                 'Protein & Seeds','Dairy & Alternatives','Oils & Fats','Staples & Spices','Snacks','Ready to Cook','Other'];
+  const byCategory = {};
+  cycle.basket.forEach((line, i) => {
+    const cat = line.category || 'Other';
+    if (!byCategory[cat]) byCategory[cat] = [];
+    byCategory[cat].push({ line, i });
+  });
+  const CATEGORY_ICON = {
+    'Grains & Cereals': '🌾', 'Lentils & Legumes': '🫘', 'Vegetables': '🥬',
+    'Fruits': '🍎', 'Protein & Seeds': '🥜', 'Dairy & Alternatives': '🥛',
+    'Oils & Fats': '🫙', 'Staples & Spices': '🧂', 'Snacks': '🍿', 'Ready to Cook': '🍱', 'Other': '🛒',
+  };
+  const groupedBasket = ORDER.filter(c => byCategory[c]).map(cat => {
+    const items = byCategory[cat].map(({ line, i }) => basketLines[i]).join('');
+    return `
+      <div class="mb-4">
+        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2 flex items-center gap-1.5">
+          <span>${CATEGORY_ICON[cat] || '🛒'}</span><span>${cat}</span>
+        </div>
+        ${items}
+      </div>`;
+  }).join('');
+
   setHtml('result-section', `
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-5 fade-in">
 
@@ -410,15 +451,30 @@ function renderBasket(cycle) {
       <div class="lg:col-span-2 bg-white rounded-2xl border border-slate-100 shadow-sm p-6">
         <div class="flex items-center justify-between mb-1">
           <h3 class="font-bold text-slate-900">This Week's Basket</h3>
-          <div class="text-right">
-            <span class="text-sm font-bold text-slate-800">₹${Math.round(cycle.budget_used_inr)}</span>
-            <span class="text-xs text-slate-400"> / ₹${Math.round(cycle.budget_total_inr)}</span>
+          <div class="flex items-center gap-3">
+            <div class="text-right">
+              <span class="text-sm font-bold text-slate-800">₹${Math.round(cycle.budget_used_inr)}</span>
+              <span class="text-xs text-slate-400"> / ₹${Math.round(cycle.budget_total_inr)}</span>
+            </div>
+            <button onclick="toggleEditMode()"
+              class="text-xs border border-slate-200 text-slate-500 hover:border-[#FC8019] hover:text-[#FC8019]
+                     px-3 py-1.5 rounded-lg transition" id="edit-btn">
+              ✏️ Edit
+            </button>
           </div>
         </div>
         <div class="w-full bg-slate-100 rounded-full h-1 mb-5 overflow-hidden">
           <div class="bg-[#FC8019] h-1 rounded-full" style="width:${budgetPct}%"></div>
         </div>
-        <div>${basketLines}</div>
+        <div id="basket-lines">${groupedBasket}</div>
+        <div id="add-item-row" class="hidden mt-3 pt-3 border-t border-slate-100">
+          <button disabled
+            class="w-full border-2 border-dashed border-slate-200 text-slate-400 text-sm rounded-xl py-3
+                   cursor-not-allowed flex items-center justify-center gap-2">
+            <span class="text-lg">+</span> Add item
+            <span class="text-xs bg-slate-100 text-slate-400 px-2 py-0.5 rounded-full ml-1">coming soon</span>
+          </button>
+        </div>
         <div class="mt-4 pt-3 border-t border-slate-100 flex flex-wrap gap-3 text-xs text-slate-400">
           ${footerChips}
         </div>
@@ -462,6 +518,23 @@ function renderBasket(cycle) {
       el.style.width = el.dataset.target + '%';
     });
   }));
+}
+
+// ── Edit mode ────────────────────────────────────────────────────────────────
+function toggleEditMode() {
+  editMode = !editMode;
+  document.querySelectorAll('.edit-controls').forEach(el => {
+    el.classList.toggle('hidden', !editMode);
+  });
+  document.getElementById('add-item-row').classList.toggle('hidden', !editMode);
+  const btn = document.getElementById('edit-btn');
+  if (editMode) {
+    btn.textContent = '✓ Done';
+    btn.classList.add('border-[#FC8019]', 'text-[#FC8019]');
+  } else {
+    btn.textContent = '✏️ Edit';
+    btn.classList.remove('border-[#FC8019]', 'text-[#FC8019]');
+  }
 }
 
 // ── Swap helpers ──────────────────────────────────────────────────────────────

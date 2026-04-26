@@ -58,6 +58,106 @@ _sessions: dict[str, "_Session"] = {}
 _CATALOGUE = fixture_catalogue()
 _CATALOGUE_BY_ID = {s.sku_id: s for s in _CATALOGUE}
 
+# Category for each SKU — used for basket grouping and diversity enforcement
+SKU_CATEGORY: dict[str, str] = {
+    "sku_atta_aashirvaad_5kg": "Grains & Cereals",
+    "sku_basmati_indiagate_1kg": "Grains & Cereals",
+    "sku_oats_quaker_1kg": "Grains & Cereals",
+    "sku_ragi_flour_500g": "Grains & Cereals",
+    "sku_ragi_fortified_atta_1kg": "Grains & Cereals",
+    "sku_jowar_flour_500g": "Grains & Cereals",
+    "sku_amaranth_250g": "Grains & Cereals",
+    "sku_poha_500g": "Grains & Cereals",
+    "sku_brown_rice_1kg": "Grains & Cereals",
+    "sku_cornflakes_kelloggs_500g": "Grains & Cereals",
+    "sku_toor_dal_tata_500g": "Lentils & Legumes",
+    "sku_moong_dal_tata_500g": "Lentils & Legumes",
+    "sku_chana_dal_24mantra_500g": "Lentils & Legumes",
+    "sku_rajma_organicindia_500g": "Lentils & Legumes",
+    "sku_chickpeas_fortune_500g": "Lentils & Legumes",
+    "sku_masoor_dal_500g": "Lentils & Legumes",
+    "sku_urad_dal_500g": "Lentils & Legumes",
+    "sku_soya_chunks_nutrela_200g": "Protein & Seeds",
+    "sku_roasted_chana_200g": "Protein & Seeds",
+    "sku_sesame_seeds_250g": "Protein & Seeds",
+    "sku_pumpkin_seeds_100g": "Protein & Seeds",
+    "sku_flaxseed_250g": "Protein & Seeds",
+    "sku_nutritional_yeast_100g": "Protein & Seeds",
+    "sku_tofu_urbanplatter_400g": "Protein & Seeds",
+    "sku_milk_amul_1l": "Dairy & Alternatives",
+    "sku_milk_lactose_free_1l": "Dairy & Alternatives",
+    "sku_paneer_milky_mist_200g": "Dairy & Alternatives",
+    "sku_curd_nandini_400g": "Dairy & Alternatives",
+    "sku_paneer_lactose_free_200g": "Dairy & Alternatives",
+    "sku_curd_lactose_free_400g": "Dairy & Alternatives",
+    "sku_soy_milk_b12_1l": "Dairy & Alternatives",
+    "sku_palak_500g": "Vegetables",
+    "sku_methi_250g": "Vegetables",
+    "sku_bhindi_500g": "Vegetables",
+    "sku_tomato_1kg": "Vegetables",
+    "sku_cauliflower_1kg": "Vegetables",
+    "sku_lauki_500g": "Vegetables",
+    "sku_drumstick_500g": "Vegetables",
+    "sku_green_peas_frozen_500g": "Vegetables",
+    "sku_capsicum_red_500g": "Vegetables",
+    "sku_onion_1kg": "Vegetables",
+    "sku_potato_1kg": "Vegetables",
+    "sku_carrot_500g": "Vegetables",
+    "sku_banana_1kg": "Fruits",
+    "sku_apple_1kg": "Fruits",
+    "sku_dates_lions_500g": "Fruits",
+    "sku_guava_500g": "Fruits",
+    "sku_papaya_1kg": "Fruits",
+    "sku_amla_250g": "Fruits",
+    "sku_dried_apricots_200g": "Fruits",
+    "sku_fruit_juice_tropicana_1l": "Fruits",
+    "sku_oil_fortune_1l": "Oils & Fats",
+    "sku_ghee_amul_500ml": "Oils & Fats",
+    "sku_coconut_oil_500ml": "Oils & Fats",
+    "sku_mustard_oil_500ml": "Oils & Fats",
+    "sku_masala_everest_kitchenking": "Staples & Spices",
+    "sku_haldi_tata_200g": "Staples & Spices",
+    "sku_papad_lijjat_200g": "Staples & Spices",
+    "sku_jam_kissan_500g": "Snacks",
+    "sku_peanut_chikki_200g": "Snacks",
+    "sku_makhana_salted_100g": "Snacks",
+    "sku_sev_plain_200g": "Snacks",
+    "sku_chips_lays_potato": "Snacks",
+    "sku_crackers_britannia_200g": "Snacks",
+    "sku_instant_noodles_maggi_70g": "Snacks",
+    "sku_rte_dal_makhani_300g": "Ready to Cook",
+    "sku_frozen_momos_veg_200g": "Ready to Cook",
+}
+
+# Categories that must have at least one item in the basket
+REQUIRED_CATEGORIES = {"Grains & Cereals", "Lentils & Legumes", "Vegetables", "Fruits"}
+
+
+def _ensure_category_diversity(basket_lines: list, compatible: list, budget_remaining: float) -> list:
+    """Append one cheapest compatible item for any required category missing from the basket."""
+    from datetime import date
+    present = {SKU_CATEGORY.get(line.sku.sku_id, "Other") for line in basket_lines}
+    basket_ids = {line.sku.sku_id for line in basket_lines}
+    extra = []
+    for cat in REQUIRED_CATEGORIES:
+        if cat in present:
+            continue
+        candidates = [
+            s for s in compatible
+            if SKU_CATEGORY.get(s.sku_id, "Other") == cat and s.sku_id not in basket_ids
+        ]
+        if not candidates:
+            continue
+        pick = min(candidates, key=lambda s: s.price_inr)
+        if pick.price_inr <= budget_remaining:
+            from pantrypilot.models import BasketLine
+            bl = BasketLine(sku=pick, quantity=1, reason=f"Added for {cat.lower()} variety")
+            extra.append(bl)
+            basket_ids.add(pick.sku_id)
+            budget_remaining -= pick.price_inr
+    return extra
+
+
 # Common pantry SKUs shown in the form (label, sku_id, default_g)
 PANTRY_FORM_ITEMS = [
     ("Atta / wheat flour",    "sku_atta_aashirvaad_5kg",     0),
@@ -228,6 +328,7 @@ def _cycle_dict(session_id: str, hh: Household, opt: OptimizationResult,
                 "total_price_inr": line.total_price_inr(),
                 "nutrition_estimated": line.sku.nutrition.is_estimated,
                 "reason": line.reason,
+                "category": SKU_CATEGORY.get(line.sku.sku_id, "Other"),
                 "alternatives": _alternatives(line.sku.sku_id, compatible, basket_ids),
             }
             for line in opt.basket.lines
@@ -419,6 +520,12 @@ async def api_post_cycle(body: CycleRequest):
     pantry = _pantries.get(body.household_id, [])
     opt = optimise_basket(hh, compatible, pantry)
     filtered_out = len(_CATALOGUE) - len(compatible)
+
+    # Ensure at least one item from each required category
+    budget_remaining = opt.budget_total_inr - opt.budget_used_inr
+    extra_lines = _ensure_category_diversity(opt.basket.lines, compatible, budget_remaining)
+    if extra_lines:
+        opt.basket.lines.extend(extra_lines)
 
     sid = f"sid_{uuid.uuid4().hex[:12]}"
     ttl = 14400
