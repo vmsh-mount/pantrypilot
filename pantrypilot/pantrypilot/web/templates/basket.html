@@ -1,0 +1,209 @@
+{% extends "base.html" %}
+{% block title %}{{ hh.name }} — Basket{% endblock %}
+
+{% block content %}
+
+{# ── Header ─────────────────────────────────────────────────────────────── #}
+<div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:0.5rem;">
+  <div>
+    <h1 style="margin-bottom:0.25rem">{{ hh.name }}</h1>
+    <span class="small">{{ hh.members|length }} member{% if hh.members|length != 1 %}s{% endif %} · {{ result.basket.lines|length }} items · solved in {{ solve_ms }} ms</span>
+  </div>
+  <div style="text-align:right">
+    <strong style="font-size:1.3rem">₹{{ result.budget_used_inr|round(0)|int }}</strong>
+    <span class="small"> / ₹{{ hh.weekly_budget_inr }}</span><br>
+    <span class="small">{{ filtered_out }} of {{ total_skus }} SKUs filtered · {{ compatible_skus }} compatible</span>
+  </div>
+</div>
+<br>
+
+{# ── Status banner ──────────────────────────────────────────────────────── #}
+{% if result.status == "OPTIMAL" %}
+<p style="color:#16a34a;font-weight:600;">✓ Optimal basket found — {{ result.nfi.overall_pct|round(1) }}% NFI overall</p>
+{% elif result.status == "FEASIBLE" %}
+<p style="color:#d97706;font-weight:600;">⚠ Feasible but not provably optimal</p>
+{% else %}
+<p style="color:#dc2626;font-weight:600;">✗ {{ result.status }}</p>
+{% endif %}
+
+{# ── Two-column layout: basket left, NFI right ─────────────────────────── #}
+<div class="grid-2">
+
+  {# ─── Basket lines ─────────────────────────────────────────────────────── #}
+  <article>
+    <header><strong>Basket</strong></header>
+    {% if result.basket.lines %}
+      {% set colors = ["#6366f1","#ec4899","#f59e0b","#10b981","#3b82f6","#8b5cf6","#14b8a6","#f43f5e"] %}
+      {% for line in result.basket.lines %}
+      {% set cidx = loop.index0 % colors|length %}
+      <div style="display:flex;gap:0.75rem;align-items:flex-start;padding:0.5rem 0;border-bottom:1px solid var(--pico-muted-border-color);">
+        <div class="avatar" style="background:{{ colors[cidx] }}">{{ line.sku.brand[0]|upper }}</div>
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;justify-content:space-between;gap:0.5rem;flex-wrap:wrap;">
+            <div>
+              <strong>{{ line.sku.name }}</strong>
+              {% if line.sku.nutrition.ultra_processed %}
+              <span class="badge-up">ultra-processed</span>
+              {% endif %}
+              {% if not line.sku.nutrition.is_estimated %}
+              <span class="badge-brand">label verified</span>
+              {% elif line.sku.nutrition.source.value == "IFCT_2017" %}
+              <span class="badge-ifct">IFCT-2017</span>
+              {% else %}
+              <span class="badge-est">estimated</span>
+              {% endif %}
+              {% if line.sku.sku_id in result.pantry_topup %}
+              <span style="font-size:0.65rem;background:#dbeafe;color:#1e40af;border-radius:4px;padding:1px 5px;">↑ low stock</span>
+              {% endif %}
+            </div>
+            <strong style="white-space:nowrap">₹{{ line.total_price_inr()|round(0)|int }}</strong>
+          </div>
+          <div class="small">{{ line.quantity }}× {{ line.sku.pack_size_g|round(0)|int }}g</div>
+          {% if line.reason %}
+          <div class="small" style="font-style:italic;color:var(--pico-muted-color);">{{ line.reason }}</div>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      <p>No items — try increasing the budget or adding members.</p>
+    {% endif %}
+    <footer style="font-size:0.85rem;color:var(--pico-muted-color);">
+      Binding nutrient: <strong>{{ result.binding_nutrient }}</strong>
+      {% if result.overstocked_skipped %}· {{ result.overstocked_skipped|length }} well-stocked item{% if result.overstocked_skipped|length != 1 %}s{% endif %} skipped{% endif %}
+    </footer>
+  </article>
+
+  {# ─── Nutrition panel ──────────────────────────────────────────────────── #}
+  <div>
+
+    {# Core 5 NFI #}
+    <article>
+      <header>
+        <strong>NFI — Core 5 nutrients</strong>
+        {% if result.basket.has_estimated_nutrition() %}
+        <span class="badge-est" style="float:right;">some values estimated</span>
+        {% endif %}
+      </header>
+
+      <div style="text-align:center;padding:0.5rem 0 1rem;">
+        <span style="font-size:2.5rem;font-weight:700;color:{% if result.nfi.overall_pct >= 80 %}#16a34a{% elif result.nfi.overall_pct >= 50 %}#d97706{% else %}#dc2626{% endif %}">
+          {{ result.nfi.overall_pct|round(0)|int }}%
+        </span>
+        <div class="small">overall NFI (worst-nutrient score)</div>
+      </div>
+
+      {% macro core_bar(label, pct) %}
+      <div style="margin-bottom:0.6rem;">
+        <div style="display:flex;justify-content:space-between;">
+          <span style="font-size:0.85rem;">{{ label }}
+            {% if result.binding_nutrient == label|lower and result.nfi.overall_pct < 100 %}
+            <span style="font-size:0.65rem;color:#dc2626;">← binding</span>
+            {% endif %}
+          </span>
+          <span style="font-size:0.85rem;font-weight:600">{{ pct|round(1) }}%</span>
+        </div>
+        <div class="nfi-bar-wrap">
+          <div class="nfi-bar {% if pct >= 99 %}green{% elif pct >= 80 %}green{% elif pct >= 50 %}amber{% else %}red{% endif %}"
+               style="width:0%" data-target="{{ [pct, 100]|min }}"></div>
+        </div>
+      </div>
+      {% endmacro %}
+
+      {{ core_bar("Calories",  result.nfi.calories_pct) }}
+      {{ core_bar("Protein",   result.nfi.protein_pct) }}
+      {{ core_bar("Fibre",     result.nfi.fibre_pct) }}
+      {{ core_bar("Iron",      result.nfi.iron_pct) }}
+      {{ core_bar("Calcium",   result.nfi.calcium_pct) }}
+    </article>
+
+    {# Extended 7 nutrients #}
+    <article>
+      <header><strong>Extended nutrients</strong> <span class="small">(display only — not in optimizer)</span></header>
+      {% for label, pct, attr in ext_nutrients %}
+      <div style="margin-bottom:0.5rem;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-size:0.82rem;">{{ label }}</span>
+          <span style="font-size:0.82rem;font-weight:600">
+            {% if pct == 0 and attr in missing_by_nutrient %}
+            <span style="color:#94a3b8;">? data gap</span>
+            {% else %}
+            {{ pct|round(0)|int }}%
+            {% endif %}
+          </span>
+        </div>
+        <div class="nfi-bar-wrap">
+          <div class="nfi-bar {% if pct >= 80 %}green{% elif pct >= 50 %}amber{% elif pct > 0 %}red{% else %}grey{% endif %}"
+               style="width:0%" data-target="{{ [pct, 100]|min }}"></div>
+        </div>
+      </div>
+      {% endfor %}
+      {% if missing_by_nutrient %}
+      <details style="margin-top:0.75rem;">
+        <summary class="small">Data gaps ({{ missing_by_nutrient|length }} nutrient{% if missing_by_nutrient|length != 1 %}s{% endif %} with missing SKU data)</summary>
+        <div class="warning-box" style="margin-top:0.5rem;">
+          <strong>Coverage shown as 0% does not mean zero intake</strong> — it means we don't have reliable data for these nutrients in the basket SKUs. Actual intake may be higher.
+          <ul style="margin:0.5rem 0 0;padding-left:1.25rem;">
+          {% for attr, sku_ids in missing_by_nutrient.items() %}
+            <li class="small"><strong>{{ attr }}</strong>: missing for {{ sku_ids|length }} item{% if sku_ids|length != 1 %}s{% endif %}</li>
+          {% endfor %}
+          </ul>
+        </div>
+      </details>
+      {% endif %}
+    </article>
+
+    {# Negative nutrients panel #}
+    <article>
+      <header><strong>Negative nutrients</strong> <span class="small">(guideline ceilings)</span></header>
+
+      {% macro neg_bar(label, value, ceiling, missing_count, unit) %}
+      {% set pct = [value / ceiling * 100, 100]|min if ceiling > 0 else 0 %}
+      <div style="margin-bottom:0.75rem;">
+        <div style="display:flex;justify-content:space-between;">
+          <span style="font-size:0.85rem;">{{ label }}</span>
+          <span style="font-size:0.82rem;">
+            {% if missing_count > 0 %}<span class="badge-est">{{ missing_count }} gap{% if missing_count != 1 %}s{% endif %}</span> {% endif %}
+            <strong>{{ value|round(0)|int }}</strong> / {{ ceiling|round(0)|int }} {{ unit }}
+          </span>
+        </div>
+        <div class="neg-bar-wrap">
+          <div class="neg-bar {% if pct < 80 %}ok{% endif %}" style="width:{{ pct }}%"></div>
+        </div>
+        <div class="small" style="color:var(--pico-muted-color)">
+          {% if pct >= 100 %}⚠ Exceeds guideline{% elif pct >= 80 %}Near guideline{% else %}Within guideline{% endif %}
+        </div>
+      </div>
+      {% endmacro %}
+
+      {{ neg_bar("Sodium (WHO ≤ 2000 mg/day/person)", neg.sodium_mg, sodium_ceiling, neg.sodium_missing_lines, "mg/wk") }}
+      {{ neg_bar("Saturated fat (≤ 10% of kcal)", neg.saturated_fat_g, sat_fat_ceiling, neg.saturated_fat_missing_lines, "g/wk") }}
+      {{ neg_bar("Added sugar (≤ 25 g/day/adult)", neg.added_sugar_g, added_sugar_ceiling, neg.added_sugar_missing_lines, "g/wk") }}
+
+      {% if neg.ultra_processed_count > 0 %}
+      <div style="margin-top:0.5rem;" class="small">
+        <span class="badge-up">{{ neg.ultra_processed_count }} ultra-processed item{% if neg.ultra_processed_count != 1 %}s{% endif %}</span>
+        in basket — consider replacing with whole-food alternatives.
+      </div>
+      {% else %}
+      <div class="small" style="color:#16a34a;margin-top:0.5rem;">✓ No ultra-processed items in basket</div>
+      {% endif %}
+    </article>
+
+  </div>{# end right column #}
+</div>{# end grid-2 #}
+
+<br>
+<div style="text-align:center;">
+  <a href="/household/new" role="button" class="secondary outline">← Plan for another household</a>
+</div>
+
+<script>
+  // Animate NFI and negative bars after paint
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    document.querySelectorAll('.nfi-bar[data-target]').forEach(el => {
+      el.style.width = el.dataset.target + '%';
+    });
+  }));
+</script>
+{% endblock %}

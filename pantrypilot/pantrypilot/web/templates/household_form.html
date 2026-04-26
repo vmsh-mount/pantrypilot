@@ -1,0 +1,168 @@
+{% extends "base.html" %}
+{% block title %}New Household{% endblock %}
+
+{% block head %}
+<style>
+  .remove-btn { float: right; font-size: 0.75rem; padding: 0.2rem 0.5rem; margin-top: -0.25rem; }
+</style>
+{% endblock %}
+
+{% block content %}
+<h1>Tell us about your household</h1>
+<p class="small">PantryPilot will build a nutritionally balanced weekly basket respecting every member's dietary needs.</p>
+
+<form method="post" action="/household" id="hhForm">
+
+  <article>
+    <header><strong>Household details</strong></header>
+    <div class="grid-2">
+      <label>Household name
+        <input type="text" name="household_name" value="My Household" required>
+      </label>
+      <label>Pincode
+        <input type="text" name="pincode" value="560001" pattern="[0-9]{6}" required>
+      </label>
+    </div>
+    <label>Weekly grocery budget (₹)
+      <input type="number" name="weekly_budget" value="2500" min="500" max="10000" step="100" required>
+    </label>
+  </article>
+
+  <h2>Members <button type="button" onclick="addMember()" style="float:right;font-size:0.85rem;padding:0.3rem 0.8rem;">+ Add member</button></h2>
+
+  <div id="members">
+    <!-- Default first member -->
+    <div class="member-card" id="member_0">
+      <!-- JS initFirstMember() will populate this on DOMContentLoaded -->
+    </div>
+  </div>
+
+  <br>
+  <button type="submit">Optimise basket →</button>
+</form>
+
+<script>
+  let memberCount = 1;
+  const DIETARY = [
+    {v:"vegetarian",l:"Vegetarian"},
+    {v:"vegan",l:"Vegan"},
+    {v:"eggetarian",l:"Eggetarian"},
+    {v:"non_veg",l:"Non-Veg"},
+    {v:"jain",l:"Jain"},
+  ];
+  const ALLERGIES = [
+    {v:"lactose",l:"Lactose intolerant"},
+    {v:"gluten",l:"Gluten"},
+    {v:"nuts",l:"Nut allergy"},
+    {v:"soy",l:"Soy"},
+  ];
+
+  function memberHtml(i) {
+    const d = DIETARY.map(o =>
+      `<label style="display:inline-flex;gap:4px;align-items:center;margin-right:12px;">
+        <input type="checkbox" name="member_dietary_${i}" value="${o.v}"${o.v==="vegetarian"?" checked":""}> ${o.l}
+       </label>`).join("");
+    const a = ALLERGIES.map(o =>
+      `<label style="display:inline-flex;gap:4px;align-items:center;margin-right:12px;">
+        <input type="checkbox" name="member_allergy_${i}" value="${o.v}"> ${o.l}
+       </label>`).join("");
+    return `
+    <div class="member-card" id="member_${i}">
+      <fieldset>
+        <legend>Member ${i+1} <button type="button" class="secondary outline remove-btn" onclick="removeMember(this)">✕</button></legend>
+        <div class="grid-2">
+          <label>Name<input type="text" name="member_name_${i}" value="Member ${i+1}" required></label>
+          <label>Age<input type="number" name="member_age_${i}" value="30" min="1" max="100" required></label>
+        </div>
+        <div class="grid-2">
+          <label>Sex
+            <select name="member_sex_${i}">
+              <option value="male">Male</option>
+              <option value="female">Female</option>
+            </select>
+          </label>
+          <label>Weight (kg)<input type="number" name="member_weight_${i}" value="60" min="5" max="200" step="0.5" required></label>
+        </div>
+        <label>Activity level
+          <select name="member_activity_${i}">
+            <option value="sedentary">Sedentary</option>
+            <option value="moderate" selected>Moderate</option>
+            <option value="heavy">Heavy</option>
+          </select>
+        </label>
+        <fieldset><legend style="font-size:0.85rem">Dietary patterns</legend>${d}</fieldset>
+        <fieldset><legend style="font-size:0.85rem">Allergies / intolerances</legend>${a}</fieldset>
+      </fieldset>
+    </div>`;
+  }
+
+  // Patch first member to use index 0 fields
+  (function initFirstMember() {
+    const i = 0;
+    const card = document.getElementById("member_0");
+    const d = DIETARY.map(o =>
+      `<label style="display:inline-flex;gap:4px;align-items:center;margin-right:12px;">
+        <input type="checkbox" name="member_dietary_${i}" value="${o.v}"${o.v==="vegetarian"?" checked":""}> ${o.l}
+       </label>`).join("");
+    const a = ALLERGIES.map(o =>
+      `<label style="display:inline-flex;gap:4px;align-items:center;margin-right:12px;">
+        <input type="checkbox" name="member_allergy_${i}" value="${o.v}"> ${o.l}
+       </label>`).join("");
+    card.innerHTML = `<fieldset>
+      <legend>Member 1 <button type="button" class="secondary outline remove-btn" onclick="removeMember(this)" style="display:none">✕</button></legend>
+      <div class="grid-2">
+        <label>Name<input type="text" name="member_name_0" value="Member 1" required></label>
+        <label>Age<input type="number" name="member_age_0" value="30" min="1" max="100" required></label>
+      </div>
+      <div class="grid-2">
+        <label>Sex
+          <select name="member_sex_0">
+            <option value="male">Male</option>
+            <option value="female">Female</option>
+          </select>
+        </label>
+        <label>Weight (kg)<input type="number" name="member_weight_0" value="65" min="5" max="200" step="0.5" required></label>
+      </div>
+      <label>Activity level
+        <select name="member_activity_0">
+          <option value="sedentary">Sedentary</option>
+          <option value="moderate" selected>Moderate</option>
+          <option value="heavy">Heavy</option>
+        </select>
+      </label>
+      <fieldset><legend style="font-size:0.85rem">Dietary patterns</legend>${d}</fieldset>
+      <fieldset><legend style="font-size:0.85rem">Allergies / intolerances</legend>${a}</fieldset>
+    </fieldset>`;
+  })();
+
+  function addMember() {
+    document.getElementById("members").insertAdjacentHTML("beforeend", memberHtml(memberCount));
+    // Show remove buttons if >1 member
+    updateRemoveButtons();
+    memberCount++;
+  }
+
+  function removeMember(btn) {
+    btn.closest(".member-card").remove();
+    updateRemoveButtons();
+    renumberMembers();
+  }
+
+  function updateRemoveButtons() {
+    const cards = document.querySelectorAll(".member-card");
+    cards.forEach((c, idx) => {
+      const btn = c.querySelector(".remove-btn");
+      if (btn) btn.style.display = cards.length > 1 ? "" : "none";
+    });
+  }
+
+  function renumberMembers() {
+    document.querySelectorAll(".member-card fieldset legend").forEach((leg, idx) => {
+      const textNode = leg.firstChild;
+      if (textNode && textNode.nodeType === 3) {
+        textNode.textContent = `Member ${idx + 1} `;
+      }
+    });
+  }
+</script>
+{% endblock %}

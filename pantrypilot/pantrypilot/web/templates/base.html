@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}PantryPilot{% endblock %} — Powered by Swiggy Instamart</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <style>
+    :root { --pico-font-size: 15px; }
+    nav { padding: 0.75rem 1rem; background: var(--pico-card-background-color); border-bottom: 1px solid var(--pico-muted-border-color); }
+    .brand { font-weight: 700; font-size: 1.1rem; text-decoration: none; color: inherit; }
+    .badge-swiggy { font-size: 0.7rem; color: var(--pico-muted-color); font-weight: 400; }
+    .nfi-bar-wrap { background: var(--pico-muted-border-color); border-radius: 4px; height: 10px; overflow: hidden; margin-top: 2px; }
+    .nfi-bar { height: 10px; border-radius: 4px; transition: width 0.7s ease; background: var(--pico-primary); }
+    .nfi-bar.green  { background: #22c55e; }
+    .nfi-bar.amber  { background: #f59e0b; }
+    .nfi-bar.red    { background: #ef4444; }
+    .nfi-bar.grey   { background: #94a3b8; }
+    .badge-est  { font-size: 0.65rem; background: #fef9c3; color: #92400e; border-radius: 4px; padding: 1px 5px; }
+    .badge-up   { font-size: 0.65rem; background: #fee2e2; color: #991b1b; border-radius: 4px; padding: 1px 5px; }
+    .badge-brand { font-size: 0.65rem; background: #dcfce7; color: #14532d; border-radius: 4px; padding: 1px 5px; }
+    .badge-ifct { font-size: 0.65rem; background: #ede9fe; color: #4c1d95; border-radius: 4px; padding: 1px 5px; }
+    .avatar { display: inline-flex; align-items: center; justify-content: center;
+              width: 2rem; height: 2rem; border-radius: 50%; font-weight: 700;
+              font-size: 0.85rem; color: #fff; flex-shrink: 0; }
+    .neg-bar-wrap { background: var(--pico-muted-border-color); border-radius: 4px; height: 8px; overflow: hidden; margin-top: 2px; }
+    .neg-bar { height: 8px; border-radius: 4px; background: #ef4444; transition: width 0.7s ease; }
+    .neg-bar.ok { background: #22c55e; }
+    details summary { cursor: pointer; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    @media (max-width: 640px) { .grid-2 { grid-template-columns: 1fr; } }
+    .member-card { border: 1px solid var(--pico-muted-border-color); border-radius: 8px; padding: 1rem; margin-bottom: 0.75rem; }
+    .member-card legend { font-weight: 600; font-size: 0.9rem; }
+    .small { font-size: 0.8rem; color: var(--pico-muted-color); }
+    .warning-box { background: #fffbeb; border: 1px solid #fcd34d; border-radius: 6px; padding: 0.75rem 1rem; font-size: 0.85rem; }
+  </style>
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <nav>
+    <div class="container-fluid">
+      <a class="brand" href="/">🥗 PantryPilot</a>
+      <span class="badge-swiggy"> — Powered by Swiggy Instamart</span>
+    </div>
+  </nav>
+  <main class="container" style="padding-top:1.5rem;padding-bottom:3rem;">
+    {% block content %}{% endblock %}
+  </main>
+  <footer style="text-align:center;padding:1rem;font-size:0.8rem;color:var(--pico-muted-color);border-top:1px solid var(--pico-muted-border-color);">
+    Powered by <strong>Swiggy Instamart</strong> · PantryPilot demo · Nutrition data: ICMR-NIN 2020 / IFCT-2017
+  </footer>
+</body>
+</html>
