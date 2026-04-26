@@ -19,7 +19,7 @@ from pantrypilot.web.app import app
 
 
 def _post_household(client: TestClient, **fields) -> str:
-    """POST a household form and return the basket URL."""
+    """POST a household form and return the basket URL (for server-rendered tests)."""
     defaults = {
         "household_name": "Test Household",
         "pincode": "560001",
@@ -34,7 +34,8 @@ def _post_household(client: TestClient, **fields) -> str:
     defaults.update(fields)
     resp = client.post("/household", data=defaults, follow_redirects=False)
     assert resp.status_code == 303, f"Expected redirect, got {resp.status_code}: {resp.text}"
-    return resp.headers["location"]
+    # Form redirects to /plan; return /basket URL for server-rendered assertion tests
+    return resp.headers["location"].replace("/plan", "/basket")
 
 
 def test_root_redirects_to_new_household():
@@ -54,11 +55,24 @@ def test_form_page_renders():
         assert "Swiggy Instamart" in resp.text
 
 
-def test_post_household_redirects_to_basket():
+def test_post_household_redirects_to_plan():
     with TestClient(app) as client:
-        loc = _post_household(client)
+        defaults = {
+            "household_name": "Test Household",
+            "pincode": "560001",
+            "weekly_budget": "2000",
+            "member_name_0": "Alice",
+            "member_age_0": "30",
+            "member_sex_0": "female",
+            "member_weight_0": "60",
+            "member_activity_0": "moderate",
+            "member_dietary_0": "vegetarian",
+        }
+        resp = client.post("/household", data=defaults, follow_redirects=False)
+        assert resp.status_code == 303
+        loc = resp.headers["location"]
         assert loc.startswith("/household/")
-        assert loc.endswith("/basket")
+        assert loc.endswith("/plan")
 
 
 def test_basket_page_renders_nfi():
@@ -160,7 +174,7 @@ if __name__ == "__main__":
     tests = [
         test_root_redirects_to_new_household,
         test_form_page_renders,
-        test_post_household_redirects_to_basket,
+        test_post_household_redirects_to_plan,
         test_basket_page_renders_nfi,
         test_basket_page_shows_negative_panel,
         test_basket_page_shows_extended_nutrients,

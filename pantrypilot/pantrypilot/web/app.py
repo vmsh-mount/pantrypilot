@@ -1,14 +1,18 @@
 """
-PantryPilot Web — household creation form + basket view.
+PantryPilot Web — household creation form + Swiggy-style plan page.
 
-Separate FastAPI app from the JSON API (pantrypilot.api).  Serves HTML via
-Jinja2 templates with Pico.css.  All state is in-memory (no Postgres).
+HTML routes:
+  GET  /                           → redirect to /household/new
+  GET  /household/new              → multi-member household form
+  POST /household                  → save household, redirect to /plan
+  GET  /household/{id}/plan        → Swiggy-style SPA (HOUSEHOLD_ID injected)
+  GET  /household/{id}/basket      → server-rendered basket (legacy/tests)
 
-Routes:
-  GET  /              → redirect to /household/new
-  GET  /household/new → multi-member form
-  POST /household     → validate + build Household, redirect to basket
-  GET  /household/{id}/basket → run optimizer, render basket page
+JSON API (consumed by plan.html JS):
+  GET  /api/household/{id}             → household JSON
+  GET  /api/catalogue?household_id=... → filtered catalogue JSON
+  POST /api/cycle                      → run optimizer, return basket+NFI
+  POST /api/cycle/{sid}/confirm        → confirm or cancel pending basket
 
 Start with:
   uvicorn pantrypilot.web.app:app --port 8001 --reload
@@ -19,15 +23,17 @@ from __future__ import annotations
 import sys
 import time
 import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
-# Allow running as __main__ from project root
 if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import FastAPI, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 
 from fixtures.instamart_catalogue import fixture_catalogue
 from pantrypilot.models import (
@@ -38,19 +44,40 @@ from pantrypilot.models import (
     Member,
     Sex,
 )
-from pantrypilot.mcp_client import MockInstamartClient
-from pantrypilot.planner import InMemoryPantryStore, PantryPilotAgent
-from pantrypilot.optimizer import optimise_basket
+from pantrypilot.optimizer import OptimizationResult, optimise_basket
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 
 app = FastAPI(title="PantryPilot Web")
 
-# In-memory household store: id → Household
 _households: dict[str, Household] = {}
-
+_sessions: dict[str, "_Session"] = {}
 _CATALOGUE = fixture_catalogue()
+
+
+@dataclass
+class _Session:
+    household_id: str
+    opt: OptimizationResult
+    created_at: float = field(default_factory=time.time)
+    ttl: int = 14400
+
+    def expired(self) -> bool:
+        return time.time() - self.created_at > self.ttl
+
+
+# ---------------------------------------------------------------------------
+# Request models
+# ---------------------------------------------------------------------------
+
+
+class CycleRequest(BaseModel):
+    household_id: str
+
+
+class ConfirmRequest(BaseModel):
+    action: str  # "confirm" | "cancel"
 
 
 # ---------------------------------------------------------------------------
@@ -58,120 +85,7 @@ _CATALOGUE = fixture_catalogue()
 # ---------------------------------------------------------------------------
 
 
-def _build_household(form: dict) -> Household:
-    """Parse raw form data into a Household domain object."""
-    name = form.get("household_name", "My Household").strip() or "My Household"
-    pincode = form.get("pincode", "000000").strip() or "000000"
-    budget = int(form.get("weekly_budget", 2000) or 2000)
-
-    members: list[Member] = []
-    i = 0
-    while True:
-        mname = form.get(f"member_name_{i}")
-        if mname is None:
-            break
-        mname = mname.strip() or f"Member {i + 1}"
-        age = int(form.get(f"member_age_{i}", 30) or 30)
-        sex = Sex(form.get(f"member_sex_{i}", "male"))
-        weight = float(form.get(f"member_weight_{i}", 60) or 60)
-        activity = ActivityLevel(form.get(f"member_activity_{i}", "moderate"))
-
-        # Multi-select dietary patterns
-        dp_raw = form.getlist(f"member_dietary_{i}") if hasattr(form, "getlist") else (
-            form.get(f"member_dietary_{i}", "vegetarian")
-            if isinstance(form.get(f"member_dietary_{i}"), str)
-            else form.get(f"member_dietary_{i}", ["vegetarian"])
-        )
-        if isinstance(dp_raw, str):
-            dp_raw = [dp_raw]
-        patterns = [DietaryPattern(p) for p in dp_raw if p]
-
-        # Multi-select allergies
-        allergy_raw = form.getlist(f"member_allergy_{i}") if hasattr(form, "getlist") else (
-            form.get(f"member_allergy_{i}", [])
-            if not isinstance(form.get(f"member_allergy_{i}"), str)
-            else [form.get(f"member_allergy_{i}")]
-        )
-        if isinstance(allergy_raw, str):
-            allergy_raw = [allergy_raw]
-        allergies = [Allergy(a) for a in allergy_raw if a]
-
-        members.append(Member(
-            name=mname,
-            age=age,
-            sex=sex,
-            weight_kg=weight,
-            activity=activity,
-            dietary_patterns=patterns or [DietaryPattern.VEGETARIAN],
-            allergies=allergies,
-        ))
-        i += 1
-
-    if not members:
-        members = [Member(
-            name="Member 1", age=30, sex=Sex.MALE, weight_kg=65,
-            activity=ActivityLevel.MODERATE,
-            dietary_patterns=[DietaryPattern.VEGETARIAN],
-        )]
-
-    hh_id = f"hh_{uuid.uuid4().hex[:8]}"
-    return Household(
-        household_id=hh_id,
-        name=name,
-        members=members,
-        weekly_budget_inr=budget,
-        pincode=pincode,
-    )
-
-
-def _negative_ceilings(weekly_targets):
-    """Return weekly upper-limit ceilings for negative nutrients."""
-    # WHO sodium: 2000 mg/day
-    sodium_ceiling = 2000.0 * 7 * len_members_approx(weekly_targets)
-    # Sat fat: 10% of total weekly calories / 9 kcal/g
-    sat_fat_ceiling = (weekly_targets.calories_kcal * 0.10) / 9.0
-    # Added sugar: 25 g/day (adults), WHO free sugar <10% energy
-    added_sugar_ceiling = 25.0 * 7 * 2  # rough 2-person adult equivalent
-
-    return {
-        "sodium_mg": 2000.0 * 7,           # per person × 7 days; show household-level context
-        "saturated_fat_g": sat_fat_ceiling,
-        "added_sugar_g": added_sugar_ceiling,
-    }
-
-
-def len_members_approx(targets) -> int:
-    return 1   # ceilings are per-person; the UI shows absolute household total vs guideline
-
-
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
-
-
-@app.get("/", response_class=RedirectResponse)
-def root():
-    return RedirectResponse(url="/household/new", status_code=302)
-
-
-@app.get("/household/new", response_class=HTMLResponse)
-def get_new_household(request: Request):
-    return templates.TemplateResponse(request, "household_form.html")
-
-
-@app.post("/household", response_class=RedirectResponse)
-async def post_household(request: Request):
-    form_data = await request.form()
-    form = dict(form_data)
-    # Reconstruct multi-value keys (dietary patterns, allergies)
-    form["_multi"] = form_data
-    hh = _build_household_from_form(form_data)
-    _households[hh.household_id] = hh
-    return RedirectResponse(url=f"/household/{hh.household_id}/basket", status_code=303)
-
-
 def _build_household_from_form(form_data) -> Household:
-    """Parse ImmutableMultiDict (FastAPI form) into a Household."""
     name = (form_data.get("household_name") or "My Household").strip()
     pincode = (form_data.get("pincode") or "000000").strip()
     budget = int(form_data.get("weekly_budget") or 2000)
@@ -227,6 +141,126 @@ def _build_household_from_form(form_data) -> Household:
     )
 
 
+def _hh_dict(hh: Household) -> dict:
+    return {
+        "household_id": hh.household_id,
+        "name": hh.name,
+        "weekly_budget_inr": hh.weekly_budget_inr,
+        "pincode": hh.pincode,
+        "members": [
+            {
+                "name": m.name,
+                "age": m.age,
+                "dietary_patterns": [p.value for p in m.dietary_patterns],
+                "allergies": [a.value for a in m.allergies],
+            }
+            for m in hh.members
+        ],
+        "powered_by": "Swiggy Instamart",
+    }
+
+
+def _cycle_dict(session_id: str, hh: Household, opt: OptimizationResult,
+               filtered_out: int, ttl: int) -> dict:
+    confirm_before = datetime.fromtimestamp(
+        time.time() + ttl, tz=timezone.utc
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    targets = hh.weekly_targets()
+    neg = opt.basket.negative_totals()
+    adults = sum(1 for m in hh.members if m.age >= 18)
+    return {
+        "session_id": session_id,
+        "household_id": hh.household_id,
+        "status": "READY_TO_CONFIRM",
+        "basket": [
+            {
+                "sku_id": line.sku.sku_id,
+                "name": line.sku.name,
+                "brand": line.sku.brand,
+                "quantity": line.quantity,
+                "pack_size_g": line.sku.pack_size_g,
+                "price_inr": line.sku.price_inr,
+                "total_price_inr": line.total_price_inr(),
+                "nutrition_estimated": line.sku.nutrition.is_estimated,
+                "reason": line.reason,
+            }
+            for line in opt.basket.lines
+        ],
+        "nfi": {
+            "calories_pct": opt.nfi.calories_pct,
+            "protein_pct": opt.nfi.protein_pct,
+            "fibre_pct": opt.nfi.fibre_pct,
+            "iron_pct": opt.nfi.iron_pct,
+            "calcium_pct": opt.nfi.calcium_pct,
+            "overall_pct": opt.nfi.overall_pct,
+            "contains_estimated": opt.nfi.contains_estimated,
+            # Extended (display only)
+            "zinc_pct": opt.nfi.zinc_pct,
+            "magnesium_pct": opt.nfi.magnesium_pct,
+            "potassium_pct": opt.nfi.potassium_pct,
+            "vitamin_a_pct": opt.nfi.vitamin_a_pct,
+            "vitamin_c_pct": opt.nfi.vitamin_c_pct,
+            "folate_pct": opt.nfi.folate_pct,
+            "vitamin_b12_pct": opt.nfi.vitamin_b12_pct,
+        },
+        "negatives": {
+            "sodium_mg": neg.sodium_mg,
+            "saturated_fat_g": neg.saturated_fat_g,
+            "added_sugar_g": neg.added_sugar_g,
+            "ultra_processed_count": neg.ultra_processed_count,
+        },
+        "neg_ceilings": {
+            "sodium_mg": 2000.0 * len(hh.members) * 7,
+            "saturated_fat_g": (targets.calories_kcal * 0.10) / 9.0,
+            "added_sugar_g": max(25.0 * adults * 7, 50.0),
+        },
+        "budget_used_inr": opt.budget_used_inr,
+        "budget_total_inr": opt.budget_total_inr,
+        "binding_nutrient": opt.binding_nutrient,
+        "overstocked_skipped": opt.overstocked_skipped,
+        "pantry_topup": opt.pantry_topup,
+        "skus_filtered_out": filtered_out,
+        "solve_time_ms": opt.solve_time_ms,
+        "confirm_before": confirm_before,
+        "powered_by": "Swiggy Instamart",
+    }
+
+
+# ---------------------------------------------------------------------------
+# HTML routes
+# ---------------------------------------------------------------------------
+
+
+@app.get("/", response_class=RedirectResponse)
+def root():
+    return RedirectResponse(url="/household/new", status_code=302)
+
+
+@app.get("/household/new", response_class=HTMLResponse)
+def get_new_household(request: Request):
+    return templates.TemplateResponse(request, "household_form.html")
+
+
+@app.post("/household", response_class=RedirectResponse)
+async def post_household(request: Request):
+    form_data = await request.form()
+    hh = _build_household_from_form(form_data)
+    _households[hh.household_id] = hh
+    return RedirectResponse(url=f"/household/{hh.household_id}/plan", status_code=303)
+
+
+@app.get("/household/{household_id}/plan", response_class=HTMLResponse)
+def get_plan(request: Request, household_id: str):
+    hh = _households.get(household_id)
+    if hh is None:
+        return templates.TemplateResponse(
+            request, "error.html",
+            {"message": f"Household '{household_id}' not found."},
+            status_code=404,
+        )
+    return templates.TemplateResponse(request, "plan.html", {"household_id": household_id})
+
+
 @app.get("/household/{household_id}/basket", response_class=HTMLResponse)
 def get_basket(request: Request, household_id: str):
     hh = _households.get(household_id)
@@ -238,25 +272,19 @@ def get_basket(request: Request, household_id: str):
         )
 
     compatible = [s for s in _CATALOGUE if s.is_compatible_with(hh)]
-    pantry: list = []  # no pantry for user-created households (first run)
-
     t0 = time.time()
-    result = optimise_basket(hh, compatible, pantry)
+    result = optimise_basket(hh, compatible, [])
     solve_ms = round((time.time() - t0) * 1000)
 
     targets = hh.weekly_targets()
     neg = result.basket.negative_totals()
     missing_report = result.basket.missing_nutrients_report()
 
-    # Sat-fat ceiling: 10% of weekly calories / 9 kcal/g
     sat_fat_ceiling = (targets.calories_kcal * 0.10) / 9.0
-    # WHO sodium ceiling: 2000 mg/day per person × members × 7 days
     sodium_ceiling = 2000.0 * len(hh.members) * 7
-    # Added sugar ceiling: 25 g/day × adults(≥18) × 7, or 50 g for household
     adults = sum(1 for m in hh.members if m.age >= 18)
     added_sugar_ceiling = max(25.0 * adults * 7, 50.0)
 
-    # Compute extended pct bars from NFI (display only)
     ext_nutrients = [
         ("Zinc",       result.nfi.zinc_pct,       "zinc_mg"),
         ("Magnesium",  result.nfi.magnesium_pct,  "magnesium_mg"),
@@ -267,7 +295,6 @@ def get_basket(request: Request, household_id: str):
         ("Vitamin B12", result.nfi.vitamin_b12_pct, "vitamin_b12_mcg"),
     ]
 
-    # Group missing nutrients: nutrient → [sku_ids]
     missing_by_nutrient: dict[str, list[str]] = {}
     for attr, sku_id in missing_report:
         missing_by_nutrient.setdefault(attr, []).append(sku_id)
@@ -286,4 +313,88 @@ def get_basket(request: Request, household_id: str):
         "compatible_skus": len(compatible),
         "filtered_out": len(_CATALOGUE) - len(compatible),
         "solve_ms": solve_ms,
+    })
+
+
+# ---------------------------------------------------------------------------
+# JSON API routes (consumed by plan.html JS)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/household/{household_id}")
+def api_get_household(household_id: str):
+    hh = _households.get(household_id)
+    if hh is None:
+        return JSONResponse({"detail": f"Household '{household_id}' not found"}, status_code=404)
+    return JSONResponse(_hh_dict(hh))
+
+
+@app.get("/api/catalogue")
+def api_get_catalogue(household_id: str = Query(...)):
+    hh = _households.get(household_id)
+    if hh is None:
+        return JSONResponse({"detail": f"Household '{household_id}' not found"}, status_code=404)
+    compatible = [s for s in _CATALOGUE if s.is_compatible_with(hh)]
+    return JSONResponse({
+        "household_id": household_id,
+        "total_skus": len(_CATALOGUE),
+        "compatible_skus": len(compatible),
+        "filtered_out": len(_CATALOGUE) - len(compatible),
+        "skus": [
+            {
+                "sku_id": s.sku_id,
+                "name": s.name,
+                "brand": s.brand,
+                "price_inr": s.price_inr,
+                "pack_size_g": s.pack_size_g,
+                "tags": sorted(s.ingredient_tags),
+            }
+            for s in compatible
+        ],
+        "powered_by": "Swiggy Instamart",
+    })
+
+
+@app.post("/api/cycle")
+async def api_post_cycle(body: CycleRequest):
+    hh = _households.get(body.household_id)
+    if hh is None:
+        return JSONResponse({"detail": f"Household '{body.household_id}' not found"}, status_code=404)
+
+    compatible = [s for s in _CATALOGUE if s.is_compatible_with(hh)]
+    opt = optimise_basket(hh, compatible, [])
+    filtered_out = len(_CATALOGUE) - len(compatible)
+
+    sid = f"sid_{uuid.uuid4().hex[:12]}"
+    ttl = 14400
+    _sessions[sid] = _Session(household_id=hh.household_id, opt=opt, ttl=ttl)
+
+    return JSONResponse(_cycle_dict(sid, hh, opt, filtered_out, ttl))
+
+
+@app.post("/api/cycle/{session_id}/confirm")
+async def api_post_confirm(session_id: str, body: ConfirmRequest):
+    session = _sessions.get(session_id)
+    if session is None:
+        return JSONResponse({"detail": "Session not found"}, status_code=404)
+    if session.expired():
+        del _sessions[session_id]
+        return JSONResponse({"detail": "Session expired"}, status_code=410)
+
+    del _sessions[session_id]
+
+    if body.action == "cancel":
+        return JSONResponse({
+            "session_id": session_id,
+            "status": "CANCELLED",
+            "order_id": None,
+            "powered_by": "Swiggy Instamart",
+        })
+
+    order_id = f"SWG-{uuid.uuid4().hex[:8].upper()}"
+    return JSONResponse({
+        "session_id": session_id,
+        "status": "PLACED",
+        "order_id": order_id,
+        "powered_by": "Swiggy Instamart",
     })
