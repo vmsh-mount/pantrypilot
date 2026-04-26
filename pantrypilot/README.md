@@ -1,8 +1,14 @@
 # PantryPilot
 
-Health-aware autonomous grocery agent for Swiggy Instamart.
+Health-aware autonomous grocery agent for Swiggy Instamart. Not a subscription cycle — a weekly re-optimisation that reasons from who you are, not what you bought.
 
-Optimises a household's weekly grocery basket respecting every member's dietary restrictions, allergy profile, and nutritional needs — using OR-Tools CP-SAT against ICMR-NIN 2020 RDAs.
+Each run is a fresh CP-SAT solve against ICMR-NIN 2020 RDAs: your household's biology (age, sex, activity), culture (dietary patterns, Jain/vegan/lactose constraints stacked across members), and pantry state (only buy what you actually need) all feed the objective function. The basket changes the moment your household changes.
+
+
+> **This repository is a demo submission** for the Swiggy Builders Club (Developer Track).
+The optimization logic, constraint model, and UX have been designed to demonstrate the broader concept. A production version would be significantly more nuanced, robust, and refined.
+Catalogue data, order placement, and authentication are currently mocked — the primary missing component is live Instamart MCP integration.
+> See [`context/proposal.md`](../context/proposal.md) for the full product vision beyond this demo.
 
 ## Quick start
 
@@ -29,6 +35,62 @@ python3 tests/test_web.py         # 11 tests — web form + basket page
 ```
 
 60 tests, no database, no network calls, no API keys. All data mocked from `fixtures/`.
+
+## What this demo covers
+
+| Feature | Status |
+|---------|--------|
+| Multi-member household setup (stacked dietary patterns, allergies) | ✅ |
+| Dietary filter — strictest-wins across all members | ✅ |
+| CP-SAT basket optimisation against ICMR-NIN 2020 RDAs | ✅ |
+| Pantry offset — only buys the shortfall | ✅ |
+| NFI score + extended nutrients + negative nutrient panel | ✅ |
+| Basket grouped by category with diversity enforcement | ✅ |
+| Delivery slot picker + 4-hour confirm window | ✅ |
+| Item substitution — pre-computed alternatives per line | ✅ |
+| Live Instamart catalogue & pricing | mocked |
+| Real order placement | mocked |
+| Auth (Swiggy SSO) | mocked |
+| Pantry state persistence | in-memory |
+
+## What is intentionally not in this demo
+
+The demo is a focused slice. Features designed but out of scope for v1:
+- Recipe-aware basket (plan for a weekly menu, not just nutrient coverage)
+- Health condition overlays (diabetic, PCOS, cardiac, post-surgery constraint profiles)
+- Consumption rate learning (estimate weekly usage from order history)
+- Partial-delivery re-optimisation (item goes out of stock post-confirm)
+- Swiggy Dineout integration (meals ordered out reduce the home cooking target)
+- Per-member preference feedback loop
+- Festival and fasting mode baskets
+- Budget flex signal ("spend ₹200 more, NFI goes from 74% → 91%")
+
+Full product vision: [`context/proposal.md`](../context/proposal.md)
+
+## Pipeline
+
+```
+Sense     Read pantry state + Instamart catalogue (mocked via MockInstamartClient)
+  ↓
+Plan      Compute household weekly targets; apply dietary/allergy filters (strictest-wins)
+  ↓
+Optimize  CP-SAT: maximise min(nutrient coverage %) within budget — pantry-offset constraints
+  ↓
+Confirm   4-hour window; confirm or cancel via web UI
+  ↓
+Place     Submit basket via Instamart MCP; update pantry state
+```
+
+## Why this isn't just a subscription model
+
+| Typical grocery automation | PantryPilot |
+|---------------------------|-------------|
+| Learns from purchase history | Derives from household biology — works on first use |
+| Ships the same list every week | Re-solves every week; changes when your household changes |
+| Pantry-blind | Only buys the shortfall; existing stock is pre-credited |
+| Substitution rules | Constraint optimisation — solver picks sesame seeds because the maths, not a rule |
+| Convenience metric | Nutritional accountability — NFI score, sodium ceiling, B12 gap all visible |
+| Lock-in model | 4-hour confirm window, one-tap cancel, no auto-charges |
 
 ## Project layout
 
@@ -60,68 +122,12 @@ tests/
   test_web.py             11 tests
 
 context/
+  proposal.md             Full product vision and Swiggy Builders submission doc
+  architecture.md         Production architecture diagram + demo → production delta
   design-decisions.md     Settled architectural choices with rationale
   nutrition-model.md      12-positive + 4-negative nutrient model, ICMR-NIN RDA table
 ```
 
-## Pipeline
-
-```
-Sense     Read pantry state + Instamart catalogue (mocked via MockInstamartClient)
-  ↓
-Plan      Compute household weekly targets; apply dietary/allergy filters (strictest-wins)
-  ↓
-Optimize  CP-SAT: maximise min(nutrient coverage %) within budget — pantry-offset constraints
-  ↓
-Confirm   4-hour window; confirm or cancel via web UI
-  ↓
-Place     Submit basket via Instamart MCP; update pantry state
-```
-
-## The Sharma household (fixture)
-
-Deliberately hard to cater to — exercises every dietary axis:
-
-| Member | Age | Constraint |
-|--------|-----|------------|
-| Ramesh | 38M | Vegetarian |
-| Priya  | 35F | Vegetarian + lactose intolerant |
-| Aarav  |  5M | Vegetarian + nut allergy |
-| Kamala | 62F | Vegetarian + Jain (no onion/garlic/roots) |
-
-13 of 67 catalogue SKUs are filtered out (dairy, onion/garlic, peanuts). Calcium is the binding constraint — sesame seeds (975 mg Ca/100g) are the optimizer's primary calcium source.
-
-## Nutrition model
-
-**12 positive nutrients tracked** against ICMR-NIN 2020 RDAs (sex × age band):
-- Core 5 (optimizer constraints): calories, protein, dietary fibre, iron, calcium
-- Extended 7 (display only): zinc, magnesium, potassium, vitamin A, vitamin C, folate, vitamin B12
-
-**4 negative nutrients monitored** against WHO/ICMR ceilings:
-- Sodium (< 2000 mg/day), saturated fat (< 10% kcal), added sugar (< 25 g/day), ultra-processed items
-
-`None ≠ 0` — missing source data is surfaced as "data gap" in the UI, never silently zeroed.
-
-## Design principles
-
-**Pantry-offset constraints.** Existing stock is pre-credited in NFI constraints. Overstocked items become poor value naturally — no artificial bans.
-
-**NFI overall = worst of core 5.** A basket scoring 100% protein and 30% iron is a 30% basket. Never papers over gaps.
-
-**Strictest-wins dietary exclusion.** Any ingredient tag excluded by any member is excluded household-wide.
-
-**Per-item transparency.** Every basket line carries a reason string (`"low stock → topped up; calcium 38%, protein 12%"`). Computed post-solve.
-
-**No dark patterns.** 4-hour confirm window with visible deadline. One-tap cancel. No auto-charges.
-
 ## Architecture
 
 See [`context/architecture.md`](../context/architecture.md) for the production architecture diagram and demo → production delta table.
-
-## Roadmap
-
-- [x] Step 1 — Domain model + ICMR-NIN RDAs + fixtures
-- [x] Step 2 — CP-SAT basket optimizer
-- [x] Step 3 — Planner loop with mock MCP
-- [x] Step 4 — JSON API + web UI (household form + Swiggy-style plan page)
-- [ ] Step 5 — Architecture diagram + Loom walkthrough + submission
