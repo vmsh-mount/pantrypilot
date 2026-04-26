@@ -116,7 +116,7 @@ Deliberately hard to cater to — exercises every dietary axis:
 
 ## Architecture
 
-See [`context/architecture.md`](context/architecture.md) for the production architecture diagram and demo → production delta table.
+See [`context/architecture.md`](../context/architecture.md) for the production architecture diagram and demo → production delta table.
 
 ## Roadmap
 
