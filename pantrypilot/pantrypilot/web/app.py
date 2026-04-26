@@ -42,6 +42,7 @@ from pantrypilot.models import (
     DietaryPattern,
     Household,
     Member,
+    PantryItem,
     Sex,
 )
 from pantrypilot.optimizer import OptimizationResult, optimise_basket
@@ -52,8 +53,22 @@ templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 app = FastAPI(title="PantryPilot Web")
 
 _households: dict[str, Household] = {}
+_pantries: dict[str, list[PantryItem]] = {}
 _sessions: dict[str, "_Session"] = {}
 _CATALOGUE = fixture_catalogue()
+_CATALOGUE_BY_ID = {s.sku_id: s for s in _CATALOGUE}
+
+# Common pantry SKUs shown in the form (label, sku_id, default_g)
+PANTRY_FORM_ITEMS = [
+    ("Atta / wheat flour",    "sku_atta_aashirvaad_5kg",     0),
+    ("Basmati rice",          "sku_basmati_indiagate_1kg",   0),
+    ("Toor dal",              "sku_toor_dal_tata_500g",      0),
+    ("Moong dal",             "sku_moong_dal_tata_500g",     0),
+    ("Cooking oil",           "sku_oil_fortune_1l",          0),
+    ("Oats",                  "sku_oats_quaker_1kg",         0),
+    ("Palak / spinach",       "sku_palak_500g",              0),
+    ("Tomatoes",              "sku_tomato_1kg",              0),
+]
 
 
 @dataclass
@@ -160,14 +175,44 @@ def _hh_dict(hh: Household) -> dict:
     }
 
 
+def _alternatives(line_sku_id: str, compatible: list, basket_sku_ids: set, n: int = 2) -> list:
+    """Top-n compatible SKUs not in basket, ranked by same food category proximity."""
+    basket_sku = _CATALOGUE_BY_ID.get(line_sku_id)
+    if basket_sku is None:
+        return []
+    # Score by tag overlap with the basket item (same category = higher score)
+    candidates = [
+        s for s in compatible
+        if s.sku_id not in basket_sku_ids and s.sku_id != line_sku_id
+    ]
+    def score(s):
+        overlap = len(set(s.ingredient_tags) & set(basket_sku.ingredient_tags))
+        # Prefer similar price range
+        price_diff = abs(s.price_inr - basket_sku.price_inr)
+        return (overlap, -price_diff)
+    candidates.sort(key=score, reverse=True)
+    return [
+        {
+            "sku_id": s.sku_id,
+            "name": s.name,
+            "brand": s.brand,
+            "price_inr": s.price_inr,
+            "pack_size_g": s.pack_size_g,
+            "reason": f"Similar option · ₹{s.price_inr:.0f}",
+        }
+        for s in candidates[:n]
+    ]
+
+
 def _cycle_dict(session_id: str, hh: Household, opt: OptimizationResult,
-               filtered_out: int, ttl: int) -> dict:
+               filtered_out: int, ttl: int, compatible: list) -> dict:
     confirm_before = datetime.fromtimestamp(
         time.time() + ttl, tz=timezone.utc
     ).strftime("%Y-%m-%dT%H:%M:%SZ")
     targets = hh.weekly_targets()
     neg = opt.basket.negative_totals()
     adults = sum(1 for m in hh.members if m.age >= 18)
+    basket_ids = {line.sku.sku_id for line in opt.basket.lines}
     return {
         "session_id": session_id,
         "household_id": hh.household_id,
@@ -183,6 +228,7 @@ def _cycle_dict(session_id: str, hh: Household, opt: OptimizationResult,
                 "total_price_inr": line.total_price_inr(),
                 "nutrition_estimated": line.sku.nutrition.is_estimated,
                 "reason": line.reason,
+                "alternatives": _alternatives(line.sku.sku_id, compatible, basket_ids),
             }
             for line in opt.basket.lines
         ],
@@ -238,14 +284,22 @@ def root():
 
 @app.get("/household/new", response_class=HTMLResponse)
 def get_new_household(request: Request):
-    return templates.TemplateResponse(request, "household_form.html")
+    return templates.TemplateResponse(request, "household_form.html", {"pantry_items": PANTRY_FORM_ITEMS})
 
 
 @app.post("/household", response_class=RedirectResponse)
 async def post_household(request: Request):
+    from datetime import date
     form_data = await request.form()
     hh = _build_household_from_form(form_data)
     _households[hh.household_id] = hh
+    today = date.today()
+    pantry = [
+        PantryItem(sku_id=sku_id, quantity_g=float(form_data.get(f"pantry_{sku_id}", 0) or 0), last_updated=today)
+        for _, sku_id, _ in PANTRY_FORM_ITEMS
+        if float(form_data.get(f"pantry_{sku_id}", 0) or 0) > 0
+    ]
+    _pantries[hh.household_id] = pantry
     return RedirectResponse(url=f"/household/{hh.household_id}/plan", status_code=303)
 
 
@@ -362,14 +416,15 @@ async def api_post_cycle(body: CycleRequest):
         return JSONResponse({"detail": f"Household '{body.household_id}' not found"}, status_code=404)
 
     compatible = [s for s in _CATALOGUE if s.is_compatible_with(hh)]
-    opt = optimise_basket(hh, compatible, [])
+    pantry = _pantries.get(body.household_id, [])
+    opt = optimise_basket(hh, compatible, pantry)
     filtered_out = len(_CATALOGUE) - len(compatible)
 
     sid = f"sid_{uuid.uuid4().hex[:12]}"
     ttl = 14400
     _sessions[sid] = _Session(household_id=hh.household_id, opt=opt, ttl=ttl)
 
-    return JSONResponse(_cycle_dict(sid, hh, opt, filtered_out, ttl))
+    return JSONResponse(_cycle_dict(sid, hh, opt, filtered_out, ttl, compatible))
 
 
 @app.post("/api/cycle/{session_id}/confirm")

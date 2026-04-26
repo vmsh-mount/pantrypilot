@@ -37,6 +37,24 @@
     </div>
   </div>
 
+  <details>
+    <summary style="cursor:pointer;font-weight:600;font-size:1rem;margin:1.5rem 0 0.75rem">
+      What's already in your pantry? <span style="font-weight:400;font-size:0.8rem;color:#666">(optional — helps avoid over-buying)</span>
+    </summary>
+    <article>
+      <p class="small" style="margin-bottom:1rem">Enter approximate quantity in grams you currently have at home.</p>
+      <div class="grid-2">
+        {% for label, sku_id, default_g in pantry_items %}
+        <label>{{ label }}
+          <input type="number" name="pantry_{{ sku_id }}"
+                 value="{{ default_g if default_g else '' }}"
+                 placeholder="0 g" min="0" max="10000" step="50">
+        </label>
+        {% endfor %}
+      </div>
+    </article>
+  </details>
+
   <br>
   <button type="submit">Save household →</button>
 </form>

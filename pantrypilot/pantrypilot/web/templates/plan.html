@@ -44,6 +44,33 @@
   <!-- Catalogue bar (shown once household is ready) -->
   <div id="catalogue-card" class="hidden bg-white rounded-2xl border border-slate-100 shadow-sm p-5 fade-in"></div>
 
+  <!-- Delivery slot picker -->
+  <div id="slot-section" class="hidden fade-in">
+    <div class="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
+      <div class="text-sm font-semibold text-slate-700 mb-3">🕐 Choose delivery slot</div>
+      <div class="grid grid-cols-3 gap-3" id="slot-btns">
+        <button onclick="selectSlot(this,'Morning','7–10 AM')"
+          class="slot-btn border-2 border-slate-200 rounded-xl py-3 text-center transition hover:border-[#FC8019]">
+          <div class="text-lg">🌅</div>
+          <div class="text-xs font-semibold text-slate-700 mt-1">Morning</div>
+          <div class="text-xs text-slate-400">7–10 AM</div>
+        </button>
+        <button onclick="selectSlot(this,'Afternoon','12–3 PM')"
+          class="slot-btn border-2 border-slate-200 rounded-xl py-3 text-center transition hover:border-[#FC8019]">
+          <div class="text-lg">☀️</div>
+          <div class="text-xs font-semibold text-slate-700 mt-1">Afternoon</div>
+          <div class="text-xs text-slate-400">12–3 PM</div>
+        </button>
+        <button onclick="selectSlot(this,'Evening','6–9 PM')"
+          class="slot-btn border-2 border-slate-200 rounded-xl py-3 text-center transition hover:border-[#FC8019] border-[#FC8019] bg-orange-50">
+          <div class="text-lg">🌆</div>
+          <div class="text-xs font-semibold text-slate-700 mt-1">Evening</div>
+          <div class="text-xs text-slate-400">6–9 PM</div>
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- Optimise CTA -->
   <div id="cta-section" class="hidden fade-in">
     <button id="optimise-btn" onclick="runOptimiser()"
@@ -68,6 +95,17 @@
 // ── State ───────────────────────────────────────────────────────────────────
 const HOUSEHOLD_ID = "{{ household_id }}";
 let sessionId = null;
+let selectedSlot = { label: 'Evening', time: '6–9 PM' };  // default
+
+function selectSlot(btn, label, time) {
+  selectedSlot = { label, time };
+  document.querySelectorAll('.slot-btn').forEach(b => {
+    b.classList.remove('border-[#FC8019]', 'bg-orange-50');
+    b.classList.add('border-slate-200');
+  });
+  btn.classList.add('border-[#FC8019]', 'bg-orange-50');
+  btn.classList.remove('border-slate-200');
+}
 
 // ── Boot ────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', async () => {
@@ -77,6 +115,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   ]);
   renderHousehold(hh);
   renderCatalogue(cat, hh.pincode);
+  show('slot-section');
   show('cta-section');
 });
 
@@ -278,21 +317,41 @@ function renderBasket(cycle) {
       ? `<span class="text-xs bg-sky-50 text-sky-600 border border-sky-100 px-1.5 py-0.5 rounded-md leading-none">↑ low stock</span>`
       : '';
     const avatar = `<div class="w-9 h-9 rounded-xl flex items-center justify-center font-bold text-sm flex-shrink-0 ${BRAND_CLS[i % BRAND_CLS.length]}">${line.brand[0]}</div>`;
+
+    const altItems = (line.alternatives || []).map(a => `
+      <button onclick="swapItem('line-${i}', '${a.name}', '${a.brand}', ${a.price_inr}, ${a.pack_size_g}, '${a.reason}')"
+        class="w-full text-left px-3 py-2 hover:bg-slate-50 rounded-lg transition">
+        <div class="text-xs font-medium text-slate-700">${a.name}</div>
+        <div class="text-xs text-slate-400">${a.brand} · ₹${Math.round(a.price_inr)}</div>
+      </button>`).join('');
+
+    const swapBtn = line.alternatives && line.alternatives.length
+      ? `<button onclick="toggleSwap('swap-${i}')"
+           class="text-xs text-[#FC8019] hover:underline mt-1 block">↕ swap</button>
+         <div id="swap-${i}" class="hidden mt-2 border border-slate-100 rounded-xl overflow-hidden">
+           <div class="px-3 pt-2 pb-1 text-xs text-slate-400 font-medium">Alternatives</div>
+           ${altItems}
+         </div>`
+      : '';
+
     return `
-      <div class="flex items-start gap-3 py-3 border-b border-slate-50 last:border-0">
-        ${avatar}
-        <div class="flex-1 min-w-0">
-          <div class="flex items-center flex-wrap gap-1.5 mb-0.5">
-            <span class="font-medium text-slate-800 text-sm leading-snug">${line.name}</span>
-            ${topupBadge}
+      <div id="line-${i}" class="py-3 border-b border-slate-50 last:border-0">
+        <div class="flex items-start gap-3">
+          ${avatar}
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center flex-wrap gap-1.5 mb-0.5">
+              <span class="font-medium text-slate-800 text-sm leading-snug line-name">${line.name}</span>
+              ${topupBadge}
+            </div>
+            <div class="text-xs text-slate-400 line-meta">
+              ${line.quantity} × ${fmtSize(line.pack_size_g)} · ${line.brand}
+            </div>
+            <div class="text-xs text-slate-400 mt-0.5 italic">${line.reason}</div>
+            ${swapBtn}
           </div>
-          <div class="text-xs text-slate-400">
-            ${line.quantity} × ${fmtSize(line.pack_size_g)} · ${line.brand}
+          <div class="text-sm font-bold text-slate-800 flex-shrink-0 pt-0.5 line-price">
+            ₹${Math.round(line.total_price_inr)}
           </div>
-          <div class="text-xs text-slate-400 mt-0.5 italic">${line.reason}</div>
-        </div>
-        <div class="text-sm font-bold text-slate-800 flex-shrink-0 pt-0.5">
-          ₹${Math.round(line.total_price_inr)}
         </div>
       </div>`;
   }).join('');
@@ -405,6 +464,21 @@ function renderBasket(cycle) {
   }));
 }
 
+// ── Swap helpers ──────────────────────────────────────────────────────────────
+function toggleSwap(id) {
+  const el = document.getElementById(id);
+  el.classList.toggle('hidden');
+}
+
+function swapItem(lineId, name, brand, priceInr, packSizeG, reason) {
+  const card = document.getElementById(lineId);
+  card.querySelector('.line-name').textContent = name;
+  card.querySelector('.line-meta').textContent = `1 × ${fmtSize(packSizeG)} · ${brand}`;
+  card.querySelector('.line-price').textContent = `₹${Math.round(priceInr)}`;
+  // Hide the swap panel after selection
+  card.querySelectorAll('[id^="swap-"]').forEach(el => el.classList.add('hidden'));
+}
+
 // ── Render: confirm bar ───────────────────────────────────────────────────────
 function renderConfirmBar(cycle) {
   const d        = new Date(cycle.confirm_before);
@@ -417,8 +491,8 @@ function renderConfirmBar(cycle) {
         <div>
           <h3 class="font-bold text-slate-900">Ready to place this order?</h3>
           <p class="text-sm text-slate-500 mt-0.5">
-            Confirm before <strong>${timeStr}</strong> on ${dateStr}
-            &nbsp;·&nbsp; one-tap cancel, no surprises
+            🚚 Delivery: <strong>${selectedSlot.label} ${selectedSlot.time}</strong>
+            &nbsp;·&nbsp; Confirm before <strong>${timeStr}</strong> on ${dateStr}
           </p>
         </div>
         <div class="flex gap-3 flex-shrink-0">
