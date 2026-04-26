@@ -370,7 +370,7 @@ function renderBasket(cycle) {
           </div>
         </div>
       </div>`;
-  }).join('');
+  });  // basketLines is an array — indexed by position below
 
   const budgetPct = Math.round((cycle.budget_used_inr / cycle.budget_total_inr) * 100);
 
